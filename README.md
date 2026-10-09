@@ -120,8 +120,14 @@ version, and click **Download** again. Continue at step 4 below.
 3. In **Repository**, paste `https://github.com/VibeOps-ZA/push-alert-tts`.
 4. In **Type** (or *Category*), choose **Integration**, then click **Add**.
    ([HACS guide to custom repositories](https://hacs.xyz/docs/faq/custom_repositories/))
+
+   <img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/01-hacs-custom-repository.png" alt="HACS Custom repositories dialog with the repository URL and type Integration" width="300">
 5. Close the dialog. Search HACS for **Push Alert TTS** and open it.
+
+   <img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/02-hacs-repository.png" alt="The Push Alert TTS page in HACS" width="700">
 6. Click **Download** (bottom right), keep the latest version, then click **Download**.
+
+   <img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/03-hacs-download-dialog.png" alt="HACS download dialog" width="450">
 7. **Restart Home Assistant** (**Settings → System →** power icon **→ Restart
    Home Assistant**). Home Assistant usually also shows a *Restart required*
    repair message you can click.
@@ -150,6 +156,8 @@ right) → search **Push Alert TTS**. If it isn't listed, refresh the browser
 page. If it's still missing, Home Assistant hasn't been restarted since the
 download.
 
+<p><img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/04-add-integration-search.png" alt="Searching for Push Alert TTS in Add integration" width="450"></p>
+
 Fill in:
 
 | Field | What to enter |
@@ -158,6 +166,8 @@ Fill in:
 | **Pushover password** | Your Pushover password. It is used to log in once. Unless you tick the box below, it is then thrown away. |
 | **Device name** | How Home Assistant will appear in your Pushover device list. Default `ha-alert-tts`. Letters, numbers, `_` and `-` only, up to 25 characters. Must be different from your other Pushover device names. |
 | **Save password for automatic re-login** | Leave **off** unless you understand [section 13](#13-login-passwords-and-security). If on, the password is stored **in plain text** so the integration can log in again by itself. |
+
+<p><img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/05-login-form.png" alt="The Push Alert TTS login form" width="450"></p>
 
 Click **Submit**.
 
@@ -176,6 +186,12 @@ Nothing will be spoken yet. Next you choose the speakers.
 Go to **Settings → Devices & services → Push Alert TTS → ⚙ Configure** (the
 cog, or **⋮ → Configure** on some versions). Every setting can be changed at
 any time and takes effect immediately; nothing restarts.
+
+<details>
+<summary>Screenshot of the settings form</summary>
+
+<p><img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/06-options-form.png" alt="The Push Alert TTS settings form" width="420"></p>
+</details>
 
 The examples below use this sample alert:
 
@@ -334,6 +350,8 @@ automatically; alerts sent meanwhile are collected after reconnecting.
    **(all devices)**, type a message, and send. Within a few seconds your
    phone gets it and your speakers announce it. **Last alert** updates.
 
+<p><img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/07-device-page.png" alt="The Push Alert TTS device page with its controls and sensors" width="700"></p>
+
 ---
 
 ## 8. Step 6 - Add it to a dashboard
@@ -343,6 +361,10 @@ Using the visual editor:
    dashboards? See [Dashboards](https://www.home-assistant.io/dashboards/).
 2. **+ Add card** → **By entity** → search `push alert tts` → tick the
    entities you want → **Continue** → **Add to dashboard**.
+
+Example card (tile cards in a dashboard section):
+
+<p><img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/09-dashboard-card.png" alt="Example Push Alert TTS dashboard card" width="380"></p>
 
 Or paste this card. Click **+ Add card → Manual** and replace the text:
 
@@ -474,7 +496,11 @@ and [Editing automations in YAML](https://www.home-assistant.io/docs/automation/
      "activate" is required.
 
 Want a different phrase? Give the entity a different name or an
-[alias](https://www.home-assistant.io/voice_control/aliases/) in Home Assistant.
+[alias](https://www.home-assistant.io/voice_control/aliases/) in Home Assistant:
+open the entity → **⚙ Settings → Voice assistants**. In this example the switch
+also answers to "Standby mode" ("Hey Google, turn on standby mode").
+
+<p><img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/docs/images/08-voice-assistants.png" alt="Voice assistant exposure and aliases for the Push Alert TTS switch" width="450"></p>
 
 ---
 
