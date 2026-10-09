@@ -1,5 +1,7 @@
 # Push Alert TTS
 
+<img src="https://raw.githubusercontent.com/VibeOps-ZA/push-alert-tts/main/custom_components/push_alert_tts/brand/icon@2x.png" alt="Push Alert TTS icon" width="120" align="right">
+
 **Have your Pushover alerts spoken out loud on your Home Assistant speakers**
 (Google/Nest speakers, Sonos, and any other speaker Home Assistant can play
 text-to-speech on), with one switch to turn it on and off.
@@ -669,13 +671,22 @@ built on, or checked with, these public resources:
 | [home-assistant/actions](https://github.com/home-assistant/actions) (hassfest) and [hacs/action](https://github.com/hacs/action) | Automated validation on GitHub. |
 | [HACS](https://hacs.xyz/) and [My Home Assistant](https://my.home-assistant.io/) | Installation docs and the one-click buttons in this README. |
 
-The icon is original and drawn by [`scripts/make_icon.py`](scripts/make_icon.py).
+The icon is original artwork made for this project (AI-generated), with a
+lighter version for Home Assistant's dark theme.
 
 ---
 
 ## Licence and disclaimer
 
-[MIT licence](LICENSE). This project uses Pushover's public
+Copyright (C) 2026 VibeOps-ZA. Licensed under the
+[GNU General Public License v3.0](LICENSE) (GPL-3.0) from version 0.2.2.
+Versions up to 0.2.1 were released under the MIT licence.
+
+In short: anyone may use, copy and change it for free. If you share a modified
+version, you must share its source code under the same licence. This summary
+is not legal advice; the licence text is what counts.
+
+This project uses Pushover's public
 [Open Client API](https://pushover.net/api/client) and is not affiliated with
 or supported by Pushover, LLC. Use it in line with Pushover's
 [terms of service](https://pushover.net/terms).
