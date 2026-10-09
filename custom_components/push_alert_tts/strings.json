@@ -1,0 +1,174 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Push Alert TTS (unofficial Pushover client)",
+        "description": "Registers Home Assistant as a new device on your Pushover account so it receives a copy of every alert. Your phone and computer are not affected.\n\nPushover counts this as a desktop device: it needs a Pushover for Desktop licence (US$4.99 once-off) after a 30-day trial.\n\nThis integration is not made or supported by Pushover.",
+        "data": {
+          "email": "Pushover email",
+          "password": "Pushover password",
+          "device_name": "Device name",
+          "store_password": "Save password for automatic re-login"
+        },
+        "data_description": {
+          "device_name": "How this device appears in Pushover. Letters, numbers, _ and - only, max 25 characters.",
+          "store_password": "WARNING: the password is saved in PLAIN TEXT in Home Assistant's storage (.storage/core.config_entries) and in backups. Only needed if you want the integration to log in again by itself. Not possible if your Pushover account uses two-factor authentication. If off, the password is used once and forgotten."
+        }
+      },
+      "twofa": {
+        "title": "Two-factor code",
+        "description": "Enter the current code from your authenticator app.",
+        "data": {
+          "twofa": "Code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Log in to Pushover again",
+        "description": "Pushover no longer accepts this Home Assistant device's session. Log in again to keep alerts flowing. The same Pushover device is reused where possible.",
+        "data": {
+          "email": "Pushover email",
+          "password": "Pushover password",
+          "store_password": "Save password for automatic re-login"
+        },
+        "data_description": {
+          "store_password": "WARNING: saved in PLAIN TEXT in Home Assistant's storage and backups."
+        }
+      },
+      "reconfigure": {
+        "title": "Log in to Pushover again",
+        "description": "Log in again, for example to turn the saved password on or off. The same Pushover device is kept.",
+        "data": {
+          "email": "Pushover email",
+          "password": "Pushover password",
+          "store_password": "Save password for automatic re-login"
+        },
+        "data_description": {
+          "store_password": "WARNING: saved in PLAIN TEXT in Home Assistant's storage and backups."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Login failed. Check the email and password.",
+      "invalid_twofa": "Two-factor code rejected.",
+      "invalid_name": "Device name may only contain letters, numbers, _ or - (max 25 characters).",
+      "name_taken": "That device name is already used on your Pushover account. Choose another, or delete the old device at pushover.net.",
+      "register_failed": "Pushover refused the device registration (you may have reached the 10-device limit).",
+      "cannot_connect": "Could not reach Pushover."
+    },
+    "abort": {
+      "already_configured": "This Pushover account is already set up.",
+      "reauth_successful": "Logged in again. Alerts will resume.",
+      "reconfigure_successful": "Saved. Alerts will continue.",
+      "wrong_account": "That is a different Pushover account. Log in with the account this integration was set up with, or add a new integration instead."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Push Alert TTS settings",
+        "description": "Choose where and how alerts are spoken. Changes apply immediately.",
+        "data": {
+          "speakers": "Speakers",
+          "tts_entity": "Text-to-speech engine",
+          "tts_language": "Language (optional)",
+          "message_mode": "What to say",
+          "fixed_message": "Fixed phrase",
+          "regex": "Regular expression",
+          "max_length": "Maximum spoken length",
+          "multiple_message": "Phrase for several queued alerts",
+          "emergency_message": "Phrase for emergency repeats",
+          "app_filter": "Only these Pushover apps (optional)",
+          "min_priority": "Minimum priority",
+          "fallback_notify": "Phone / fallback notification",
+          "repeat_interval": "Emergency repeat interval",
+          "repeat_max": "Maximum emergency repeats",
+          "offline_alert_delay": "Warn when offline for"
+        },
+        "data_description": {
+          "speakers": "Media players to announce on. All selected speakers speak at the same time.",
+          "tts_entity": "For example Google Translate or Home Assistant Cloud.",
+          "tts_language": "Leave empty for the engine's default, e.g. en-GB.",
+          "regex": "Used when 'What to say' is regex. Speaks the group named 'say' if present, else group 1, else the whole match. Case-insensitive; '.' matches new lines. If nothing matches, the fixed phrase is spoken. Example: ^(?P<say>[^\\n]+) speaks only the first line.",
+          "max_length": "Characters. Longer text is cut at a word. 0 = no limit.",
+          "app_filter": "Comma-separated Pushover application names. Empty = all apps.",
+          "fallback_notify": "Notified if a speaker is unavailable, the Pushover connection drops, or login is needed. E.g. notify.mobile_app_your_phone.",
+          "offline_alert_delay": "Seconds the Pushover connection must be down (while enabled) before warning."
+        }
+      }
+    },
+    "error": {
+      "regex_required": "Enter a regular expression, or choose another mode.",
+      "invalid_regex": "That regular expression isn't valid.",
+      "invalid_notify": "Use the form notify.<name>."
+    }
+  },
+  "selector": {
+    "message_mode": {
+      "options": {
+        "fixed": "Fixed phrase",
+        "title": "Alert title",
+        "full": "Whole alert (title and message)",
+        "regex": "Part of the message (regex)"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "enabled": {
+        "name": "Enabled"
+      },
+      "repeat_until_ack": {
+        "name": "Repeat emergencies"
+      }
+    },
+    "number": {
+      "volume": {
+        "name": "Announce volume"
+      }
+    },
+    "button": {
+      "acknowledge": {
+        "name": "Acknowledge"
+      },
+      "test": {
+        "name": "Test announcement"
+      }
+    },
+    "binary_sensor": {
+      "connected": {
+        "name": "Pushover connected"
+      }
+    },
+    "sensor": {
+      "last_alert": {
+        "name": "Last alert"
+      }
+    }
+  },
+  "issues": {
+    "login_failed": {
+      "title": "Push Alert TTS needs you to log in to Pushover again",
+      "description": "Pushover rejected the saved session. Open the integration and re-authenticate."
+    },
+    "device_stopped": {
+      "title": "Push Alert TTS has stopped receiving alerts",
+      "description": "{reason}\n\nFix the cause on pushover.net, then reload the integration (Settings > Devices & services > Push Alert TTS > three dots > Reload)."
+    }
+  },
+  "services": {
+    "acknowledge": {
+      "name": "Acknowledge",
+      "description": "Acknowledge pending emergency Pushover alerts (stops re-alerting on all your Pushover devices) and stop speaker repeats."
+    },
+    "speak": {
+      "name": "Speak",
+      "description": "Say a message on the configured speakers at the announce volume.",
+      "fields": {
+        "message": {
+          "name": "Message",
+          "description": "Text to speak."
+        }
+      }
+    }
+  }
+}

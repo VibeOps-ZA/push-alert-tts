@@ -1,0 +1,8 @@
+target-version = "py313"
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = ["E501"]
+
+[lint.isort]
+known-first-party = ["custom_components"]

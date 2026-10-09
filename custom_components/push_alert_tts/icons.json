@@ -1,0 +1,21 @@
+{
+  "entity": {
+    "switch": {
+      "repeat_until_ack": { "default": "mdi:repeat" }
+    },
+    "number": {
+      "volume": { "default": "mdi:volume-high" }
+    },
+    "button": {
+      "acknowledge": { "default": "mdi:bell-check" },
+      "test": { "default": "mdi:bullhorn" }
+    },
+    "sensor": {
+      "last_alert": { "default": "mdi:bell-alert" }
+    }
+  },
+  "services": {
+    "acknowledge": { "service": "mdi:bell-check" },
+    "speak": { "service": "mdi:bullhorn" }
+  }
+}

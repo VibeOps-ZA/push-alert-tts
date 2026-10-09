@@ -1,0 +1,8 @@
+acknowledge:
+speak:
+  fields:
+    message:
+      required: true
+      example: "Pushover alert received, please check"
+      selector:
+        text:
