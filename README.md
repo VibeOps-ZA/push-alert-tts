@@ -630,6 +630,23 @@ anything then. Your phone remains your main alert. Use Pushover's own
 
 ---
 
+## Acknowledgements
+
+Push Alert TTS is original code; nothing was copied from other projects. It is
+built on, or checked with, these public resources:
+
+| Resource | Used for |
+|---|---|
+| [Pushover Open Client API](https://pushover.net/api/client) | The documented protocol for logging in, registering a device, receiving, deleting and acknowledging messages. |
+| [Home Assistant developer docs](https://developers.home-assistant.io/) | Standard integration patterns (config and options flows, entities, Repairs, diagnostics). |
+| [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) | Test framework (development only, not shipped). |
+| [home-assistant/actions](https://github.com/home-assistant/actions) (hassfest) and [hacs/action](https://github.com/hacs/action) | Automated validation on GitHub. |
+| [HACS](https://hacs.xyz/) and [My Home Assistant](https://my.home-assistant.io/) | Installation docs and the one-click buttons in this README. |
+
+The icon is original and drawn by [`scripts/make_icon.py`](scripts/make_icon.py).
+
+---
+
 ## Licence and disclaimer
 
 [MIT licence](LICENSE). This project uses Pushover's public
