@@ -6,3 +6,61 @@ speak:
       example: "Pushover alert received, please check"
       selector:
         text:
+get_history:
+  fields:
+    days:
+      required: false
+      example: 7
+      selector:
+        number:
+          min: 1
+          max: 90
+          mode: box
+          unit_of_measurement: days
+    limit:
+      required: false
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 1000
+          mode: box
+    search:
+      required: false
+      example: "disk"
+      selector:
+        text:
+preview:
+  fields:
+    last_alert:
+      required: false
+      default: false
+      selector:
+        boolean:
+    title:
+      required: false
+      example: "[P1] Triggered: web_check | app01.prod"
+      selector:
+        text:
+    message:
+      required: false
+      selector:
+        text:
+          multiline: true
+    app:
+      required: false
+      example: "Datadog"
+      selector:
+        text:
+    priority:
+      required: false
+      selector:
+        number:
+          min: -2
+          max: 2
+          mode: box
+    speak:
+      required: false
+      default: false
+      selector:
+        boolean:

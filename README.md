@@ -232,7 +232,7 @@ or [Home Assistant Cloud](https://www.home-assistant.io/integrations/cloud/).
 | **Fixed phrase** *(default)* | "Pushover alert received, please check" | Waking you up without reading anything sensitive aloud. |
 | **Alert title** | "PROD: disk full" | Short, informative alerts. |
 | **Whole alert** | "PROD: disk full. Host web-01 /var at 98% Runbook: link Triggered by Datadog monitor 1234" (cut to the maximum length) | Short alerts where you want everything. |
-| **Part of the message (regex)** | Whatever your pattern picks out, e.g. "Host web-01 /var at 98%" | Long alerts where only one part matters. See below. |
+| **Part of the message (regex)** | Whatever your pattern picks out, e.g. "Host web-01 /var at 98%", or a short sentence built from several parts with a *spoken template* | Long alerts where only one or two parts matter. See below. |
 
 In every mode:
 - Web links are spoken as "link", and HTML formatting is removed.
@@ -249,12 +249,17 @@ Default: `Pushover alert received, please check`.
 ### Regular expression (only for "Part of the message")
 
 A [regular expression](https://docs.python.org/3/howto/regex.html) ("regex")
-is a search pattern. Push Alert TTS searches the **message** first, then the
-**title**, and speaks:
+is a search pattern. Push Alert TTS searches the alert (by default the
+**message** first, then the **title**; see *Where the regex looks* below).
+
+**Without a spoken template** it speaks:
 1. the part in a group named `say`, written `(?P<say> ... )`, if your pattern
    has one, otherwise
 2. the part in the first set of brackets `( ... )`, otherwise
 3. everything the pattern matched.
+
+**With a spoken template** (below) you can pick out several parts and arrange
+them into a sentence.
 
 Matching ignores upper/lower case, `^` and `$` match the start and end of each
 line, and `.` also matches line breaks.
@@ -273,12 +278,108 @@ Ready-made patterns to copy:
 To build and test your own, paste a real alert into [regex101.com](https://regex101.com/),
 choose the **Python** flavour on the left, and turn on the `i`, `m` and `s`
 flags to match how Push Alert TTS searches. An invalid pattern is rejected
-when you click Submit.
+when you click Submit. Then use the
+[`push_alert_tts.preview`](#actions) action to see exactly what would be
+spoken, using your real last alert.
+
+### Where the regex looks
+
+Which part of the alert the regex searches, in this order; the first match
+wins:
+
+| Choice | Searches |
+|---|---|
+| **Message, then title** *(default)* | the message; if nothing matches, the title |
+| **Title, then message** | the title; if nothing matches, the message |
+| **Title only** | only the title (best when the title is a one-line summary) |
+| **Message only** | only the message |
+
+Only the first 500 characters of the title and 4,000 of the message are ever
+searched, so a huge alert can't slow things down.
+
+### Spoken template *(optional, regex mode only)*
+
+Builds the spoken sentence from **named groups** in your regex. A named group
+is written `(?P<name> ... )`; in the template you write the name in curly
+brackets: `{name}`. Everything else in the template is spoken as written.
+
+Example, for alerts whose **title** looks like
+`[P1] Triggered: http | web_service_check | app01.prod [env:prod]`:
+
+- **Regular expression:**
+  ```
+  ^\s*\[P\d\]\s*(?P<state>[A-Za-z][A-Za-z -]{0,19}):\s*(?P<s1>[^|\[]{1,60})(?:\|\s*(?P<s2>[^|\[]{1,60}))?(?:\|\s*(?P<s3>[^|\[]{1,60}))?
+  ```
+- **Where the regex looks:** Title only
+- **Spoken template:** `Alert, {s1}, {s2}, {s3}, {state}`
+- **Spoken:** "Alert, http, web service check, app01 prod, Triggered"
+
+How the pattern works: `\[P\d\]` skips `[P1]`; `(?P<state>…)` takes the word(s)
+before the colon; `s1`, `s2` and `s3` each take one `|`-separated part and stop
+at `|` or `[`; the `(?: … )?` around `s2` and `s3` makes them optional.
+
+Another example, for a plain message such as
+`CRITICAL: db01 disk /var at 97%`:
+
+- **Regular expression:** `(?P<level>CRITICAL|WARNING)\W+(?P<host>\S+)\D*(?P<pct>\d+%)`
+- **Spoken template:** `{level} on {host}, {pct}`
+- **Spoken:** "CRITICAL on db01, 97%"
+
+You can also use, without adding them to your regex:
+
+| Placeholder | Is replaced by |
+|---|---|
+| `{app}` | The Pushover application name, e.g. Datadog |
+| `{priority}` | The priority number, -2 to 2 |
+| `{priority_name}` | lowest, low, normal, high or emergency |
+| `{title}`, `{message}` | The whole title or message (cut to the part length below) |
+| `{1}`, `{2}`, … | Unnamed groups, by number |
+
+Write `{{` or `}}` to speak a literal curly bracket. A named group with the
+same name as a built-in (e.g. `app`) wins.
+
+When you click Submit, a template that uses a name your regex doesn't capture
+(e.g. a typo like `{hots}`) is rejected, so mistakes show up straight away.
+
+**Safety nets.** A template can never ramble on:
+1. Each placeholder is cut (at a word) to the **maximum length of each
+   template part**.
+2. Empty placeholders are left out together with their commas, so a missing
+   part never sounds like "Alert, , , Triggered".
+3. If **fewer than half** of the placeholders are filled (or none are), the
+   alert probably isn't in the format you expected, so the **fixed phrase** is
+   spoken instead. If the regex doesn't match at all, the fixed phrase is also
+   spoken.
+4. The whole sentence is cut to the **maximum spoken length** (and never more
+   than 2,000 characters).
+5. A regex is given 2 seconds; a pattern that takes longer (for example one
+   that backtracks badly on an unusual alert) is abandoned, the fixed phrase is
+   spoken and a warning is written to the Home Assistant log.
+
+### Maximum length of each template part
+
+The most characters any one placeholder can add. Longer values are cut at a
+word. Default `40`. `0` = no limit (the maximum spoken length still applies).
+
+### Tidy text for speech
+
+On by default. Makes machine-style text sound natural before it is spoken
+(in every mode except *Fixed phrase*):
+
+| Text | Spoken as |
+|---|---|
+| `web_service_check` | "web service check" |
+| `app01.prod.example` | "app01 prod example" (numbers such as `2.5` are left alone) |
+| `a \| b` | "a, b" (a short pause) |
+| `a , , b,` | "a, b" |
+
+Turn it off if you want the text exactly as received.
 
 ### Maximum spoken length
 
 The most characters that will be spoken. Longer text is cut at a word
-boundary. Default `200` (roughly 15 seconds of speech). `0` = no limit.
+boundary. Default `200` (roughly 15 seconds of speech). `0` = no limit
+(a hard limit of 2,000 characters always applies).
 
 ### Phrase for several queued alerts
 
@@ -337,6 +438,22 @@ seconds, `10` times.
 How long (in seconds) the Pushover connection must be down, while the switch is
 on, before you're warned. Default `60`. Short drops are normal and reconnect
 automatically; alerts sent meanwhile are collected after reconnecting.
+
+### Keep alert history for
+
+How many days of received alerts to keep, `0`-`90`. Default `0` (off).
+When on, every alert received (spoken or not) is added to a small file,
+`push_alert_tts/history_<entry id>.jsonl` in your Home Assistant
+[configuration folder](https://www.home-assistant.io/docs/configuration/).
+Each line holds the time, app, priority, title, message (up to 4,000
+characters), whether it was announced and what was spoken. Older lines are
+removed once a day, and there is a cap of 20,000 alerts whatever the period.
+As a guide, 1,000 alerts take about 1 MB.
+
+Read it with the [`push_alert_tts.get_history`](#actions) action. Setting the
+period back to `0` stops recording and **deletes** the saved history. The
+file is included in Home Assistant backups, and is deleted if you delete the
+integration.
 
 ---
 
@@ -602,6 +719,46 @@ Fired when alerts are acknowledged from Home Assistant.
 
 - `push_alert_tts.acknowledge` does the same as pressing the Acknowledge button.
 
+- `push_alert_tts.preview` shows what would be spoken for an alert with the
+  current settings, without waiting for a real alert. Turn on **Use last
+  alert** to test against the last alert received (taken from the history after
+  a restart, if history is on), or type a title and/or message (they override
+  the last alert's). Turn on **Speak it** to also hear it on your speakers.
+  Run it from **Developer tools → Actions** and tick *Return response*:
+
+  ```yaml
+  action: push_alert_tts.preview
+  data:
+    last_alert: true
+    speak: true
+  ```
+
+  The response shows `spoken_text`, `groups` (what each regex group captured,
+  very handy when building a pattern) and `outcome`:
+
+  | outcome | Meaning |
+  |---|---|
+  | `template` / `regex` / `title` / `full` / `fixed` | Spoken as configured |
+  | `multiple` | Several alerts at once: the queued-alerts phrase |
+  | `fallback_no_match` | The regex didn't match: fixed phrase |
+  | `fallback_template_too_empty` | Fewer than half the template placeholders were filled: fixed phrase |
+  | `fallback_empty` | Nothing left to say: fixed phrase |
+  | `fallback_timeout` | The regex took over 2 seconds: fixed phrase |
+  | `fallback_error` | Something unexpected went wrong (see the log): fixed phrase |
+
+- `push_alert_tts.get_history` returns saved alerts, newest first (needs
+  *Keep alert history for* above `0`). Options: `days` (only the last N days),
+  `limit` (default 50, up to 1,000) and `search` (text to look for in the
+  title, message, app or spoken text, not case-sensitive):
+
+  ```yaml
+  action: push_alert_tts.get_history
+  data:
+    days: 7
+    search: disk
+  response_variable: history
+  ```
+
 ---
 
 ## 15. Troubleshooting
@@ -616,6 +773,7 @@ Fired when alerts are acknowledged from Home Assistant.
 | **Pushover connected** is off | Check your internet connection. The *last_error* attribute says why. It reconnects by itself; alerts sent meanwhile are collected afterwards. |
 | *status* is `login_required` | Re-authenticate (see [section 13](#13-login-passwords-and-security)). |
 | *status* is `stopped` | Read **Settings → System → Repairs**. Usually the Desktop licence (30-day trial ended) or the device was deleted or logged in elsewhere. Fix it, then **⋮ → Reload** on the integration. |
+| Hears the fixed phrase instead of your regex / template | Run `push_alert_tts.preview` with *Use last alert* on: `outcome` says why (no match, too few parts filled, or too slow) and `groups` shows what each group captured. Check *Where the regex looks*. |
 | Speaker stays loud after an announcement | It couldn't report its volume before speaking. Set the volume once in the speaker's own app. |
 | Need help | Open an [issue](https://github.com/VibeOps-ZA/push-alert-tts/issues) and attach a diagnostics download (device page → ⋮ → Download diagnostics). Turn on debug logging via **⋮ → Enable debug logging**, reproduce, then turn it off to download the log. |
 

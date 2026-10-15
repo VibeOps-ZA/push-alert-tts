@@ -16,6 +16,8 @@
   },
   "services": {
     "acknowledge": { "service": "mdi:bell-check" },
-    "speak": { "service": "mdi:bullhorn" }
+    "speak": { "service": "mdi:bullhorn" },
+    "get_history": { "service": "mdi:history" },
+    "preview": { "service": "mdi:text-to-speech" }
   }
 }

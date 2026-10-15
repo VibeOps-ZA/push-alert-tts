@@ -42,17 +42,22 @@ from .const import (
     CONF_EMERGENCY_MESSAGE,
     CONF_FALLBACK_NOTIFY,
     CONF_FIXED_MESSAGE,
+    CONF_HISTORY_DAYS,
     CONF_MAX_LENGTH,
     CONF_MESSAGE_MODE,
     CONF_MIN_PRIORITY,
     CONF_MULTIPLE_MESSAGE,
     CONF_OFFLINE_ALERT_DELAY,
+    CONF_PART_MAX_LENGTH,
     CONF_REGEX,
+    CONF_REGEX_SOURCE,
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
     CONF_SECRET,
     CONF_SPEAKERS,
+    CONF_SPOKEN_TEMPLATE,
     CONF_STORE_PASSWORD,
+    CONF_TIDY_TEXT,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
     CONF_TWOFA,
@@ -60,19 +65,24 @@ from .const import (
     DEFAULT_DEVICE_NAME,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_FIXED_MESSAGE,
+    DEFAULT_HISTORY_DAYS,
     DEFAULT_MAX_LENGTH,
     DEFAULT_MIN_PRIORITY,
     DEFAULT_MULTIPLE_MESSAGE,
     DEFAULT_OFFLINE_ALERT_DELAY,
+    DEFAULT_PART_MAX_LENGTH,
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
     DOMAIN,
+    MAX_HISTORY_DAYS,
     MESSAGE_MODES,
     MODE_FIXED,
     MODE_REGEX,
     PRIORITIES,
+    REGEX_SOURCES,
+    SOURCE_MESSAGE_TITLE,
 )
-from .text import REGEX_FLAGS
+from .text import REGEX_FLAGS, unknown_placeholders
 
 _LOGGER = logging.getLogger(__name__)
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,25}$")
@@ -309,6 +319,12 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                         re.compile(current[CONF_REGEX], REGEX_FLAGS)
                     except re.error:
                         errors[CONF_REGEX] = "invalid_regex"
+            template = (current.get(CONF_SPOKEN_TEMPLATE) or "").strip()
+            if template and CONF_REGEX not in errors:
+                if current.get(CONF_MESSAGE_MODE) != MODE_REGEX:
+                    errors[CONF_SPOKEN_TEMPLATE] = "template_without_regex"
+                elif unknown_placeholders(template, current.get(CONF_REGEX)):
+                    errors[CONF_SPOKEN_TEMPLATE] = "unknown_placeholder"
             notify = (current.get(CONF_FALLBACK_NOTIFY) or "").strip()
             if notify and not re.match(r"^notify\.[a-z0-9_]+$", notify):
                 errors[CONF_FALLBACK_NOTIFY] = "invalid_notify"
@@ -357,6 +373,31 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                     CONF_REGEX,
                     description={"suggested_value": current.get(CONF_REGEX)},
                 ): TextSelector(TextSelectorConfig(multiline=False)),
+                vol.Optional(
+                    CONF_REGEX_SOURCE,
+                    default=opt(CONF_REGEX_SOURCE, SOURCE_MESSAGE_TITLE),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=REGEX_SOURCES,
+                        translation_key=CONF_REGEX_SOURCE,
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
+                    CONF_SPOKEN_TEMPLATE,
+                    description={"suggested_value": current.get(CONF_SPOKEN_TEMPLATE)},
+                ): TextSelector(TextSelectorConfig(multiline=False)),
+                vol.Optional(
+                    CONF_PART_MAX_LENGTH,
+                    default=opt(CONF_PART_MAX_LENGTH, DEFAULT_PART_MAX_LENGTH),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=500, step=5, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_TIDY_TEXT, default=opt(CONF_TIDY_TEXT, True)
+                ): BooleanSelector(),
                 vol.Optional(
                     CONF_MAX_LENGTH, default=opt(CONF_MAX_LENGTH, DEFAULT_MAX_LENGTH)
                 ): NumberSelector(
@@ -425,6 +466,18 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                         max=3600,
                         step=5,
                         unit_of_measurement="s",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CONF_HISTORY_DAYS,
+                    default=opt(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=MAX_HISTORY_DAYS,
+                        step=1,
+                        unit_of_measurement="days",
                         mode=NumberSelectorMode.BOX,
                     )
                 ),
