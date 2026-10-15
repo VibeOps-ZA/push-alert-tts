@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.2.2"
+VERSION = "0.3.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -42,12 +42,29 @@ CONF_FALLBACK_NOTIFY = "fallback_notify"
 CONF_REPEAT_INTERVAL = "repeat_interval"
 CONF_REPEAT_MAX = "repeat_max"
 CONF_OFFLINE_ALERT_DELAY = "offline_alert_delay"
+CONF_SPOKEN_TEMPLATE = "spoken_template"
+CONF_REGEX_SOURCE = "regex_source"
+CONF_PART_MAX_LENGTH = "part_max_length"
+CONF_TIDY_TEXT = "tidy_text"
+CONF_HISTORY_DAYS = "history_days"
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"
 MODE_FULL = "full"
 MODE_REGEX = "regex"
 MESSAGE_MODES = [MODE_FIXED, MODE_TITLE, MODE_FULL, MODE_REGEX]
+
+# Where the regular expression looks, in order (first match wins).
+SOURCE_MESSAGE_TITLE = "message_title"
+SOURCE_TITLE_MESSAGE = "title_message"
+SOURCE_TITLE = "title"
+SOURCE_MESSAGE = "message"
+REGEX_SOURCES = [
+    SOURCE_MESSAGE_TITLE,
+    SOURCE_TITLE_MESSAGE,
+    SOURCE_TITLE,
+    SOURCE_MESSAGE,
+]
 
 DEFAULT_FIXED_MESSAGE = "Pushover alert received, please check"
 DEFAULT_MULTIPLE_MESSAGE = "Multiple Pushover alerts recorded"
@@ -58,6 +75,15 @@ DEFAULT_REPEAT_INTERVAL = 60
 DEFAULT_REPEAT_MAX = 10
 DEFAULT_OFFLINE_ALERT_DELAY = 60
 DEFAULT_VOLUME = 60
+DEFAULT_PART_MAX_LENGTH = 40
+DEFAULT_HISTORY_DAYS = 0  # off
+MAX_HISTORY_DAYS = 90
+
+# Safety nets for building the spoken text.
+MAX_TITLE_INPUT = 500  # characters of the title the regex may look at
+MAX_MESSAGE_INPUT = 4000  # characters of the message the regex may look at
+HARD_MAX_SPOKEN = 2000  # never speak more than this, whatever max_length says
+TEXT_TIMEOUT = 2  # seconds a regular expression may run before giving up
 
 PRIORITIES = {
     "-2": "Lowest (-2)",

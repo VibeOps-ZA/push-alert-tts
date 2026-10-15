@@ -195,3 +195,35 @@ async def test_reauth_outage_keeps_device(hass: HomeAssistant, mock_entry) -> No
         )
     assert result["errors"] == {"base": "cannot_connect"}
     register.assert_not_awaited()
+
+
+async def test_options_template_validation(hass: HomeAssistant, mock_entry) -> None:
+    mock_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    base = {"min_priority": "-2", "regex": r"(?P<host>\S+)"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {**base, "message_mode": "title", "spoken_template": "Alert {host}"},
+    )
+    assert result["errors"] == {"spoken_template": "template_without_regex"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {**base, "message_mode": "regex", "spoken_template": "Alert {hots}"},
+    )
+    assert result["errors"] == {"spoken_template": "unknown_placeholder"}
+    with patch(
+        "custom_components.push_alert_tts.async_setup_entry",
+        new=AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                **base,
+                "message_mode": "regex",
+                "spoken_template": "Alert {host} from {app}",
+                "regex_source": "title",
+                "history_days": 31,
+            },
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert mock_entry.options["spoken_template"] == "Alert {host} from {app}"

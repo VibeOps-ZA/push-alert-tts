@@ -74,6 +74,10 @@
           "message_mode": "What to say",
           "fixed_message": "Fixed phrase",
           "regex": "Regular expression",
+          "regex_source": "Where the regex looks",
+          "spoken_template": "Spoken template (optional)",
+          "part_max_length": "Maximum length of each template part",
+          "tidy_text": "Tidy text for speech",
           "max_length": "Maximum spoken length",
           "multiple_message": "Phrase for several queued alerts",
           "emergency_message": "Phrase for emergency repeats",
@@ -82,24 +86,32 @@
           "fallback_notify": "Phone / fallback notification",
           "repeat_interval": "Emergency repeat interval",
           "repeat_max": "Maximum emergency repeats",
-          "offline_alert_delay": "Warn when offline for"
+          "offline_alert_delay": "Warn when offline for",
+          "history_days": "Keep alert history for"
         },
         "data_description": {
           "speakers": "Media players to announce on. All selected speakers speak at the same time.",
           "tts_entity": "For example Google Translate or Home Assistant Cloud.",
           "tts_language": "Leave empty for the engine's default, e.g. en-GB.",
-          "regex": "Used when 'What to say' is set to the regex option. Speaks the named group called say if your pattern has one, otherwise group 1, otherwise the whole match. Case-insensitive, and '.' also matches line breaks. If nothing matches, the fixed phrase is spoken. See the README for ready-made patterns.",
-          "max_length": "Characters. Longer text is cut at a word. 0 = no limit.",
+          "regex": "Used when 'What to say' is set to the regex option. Without a template it speaks the named group called say if your pattern has one, otherwise group 1, otherwise the whole match. Case-insensitive, and '.' also matches line breaks. If nothing matches, the fixed phrase is spoken. See the README for ready-made patterns.",
+          "max_length": "Characters. Longer text is cut at a word. 0 = no limit (a hard limit of 2000 always applies).",
           "app_filter": "Comma-separated Pushover application names. Empty = all apps.",
           "fallback_notify": "Notified if a speaker is unavailable, the Pushover connection drops, or login is needed. E.g. notify.mobile_app_your_phone.",
-          "offline_alert_delay": "Seconds the Pushover connection must be down (while enabled) before warning."
+          "offline_alert_delay": "Seconds the Pushover connection must be down (while enabled) before warning.",
+          "regex_source": "Which part of the alert the regex searches, in order. The first match wins.",
+          "spoken_template": "Regex mode only. Builds the sentence from your regex's named groups: write each group's name in curly brackets, e.g. Alert, then the name host in curly brackets. Also available: app, title, message, priority, priority_name and group numbers. Empty groups are skipped; if fewer than half are filled the fixed phrase is spoken instead. See the README for examples.",
+          "part_max_length": "Characters. Each template part is cut at a word to this length, so one long value can't take over. 0 = no limit.",
+          "tidy_text": "Reads underscores as spaces, dots between words (host.name) as spaces and | as a pause, and removes doubled or dangling commas.",
+          "history_days": "Days. Saves every received alert to a small file in your config folder so you can look back with the get_history action. 0 = off (and deletes the saved history)."
         }
       }
     },
     "error": {
       "regex_required": "Enter a regular expression, or choose another mode.",
       "invalid_regex": "That regular expression isn't valid.",
-      "invalid_notify": "Use the form notify.your_service_name, for example notify.mobile_app_your_phone."
+      "invalid_notify": "Use the form notify.your_service_name, for example notify.mobile_app_your_phone.",
+      "unknown_placeholder": "The template uses a name that your regex does not capture and is not built in. Check the spelling, or add a named group to the regex.",
+      "template_without_regex": "A spoken template only works when 'What to say' is set to the regex option."
     }
   },
   "selector": {
@@ -109,6 +121,14 @@
         "title": "Alert title",
         "full": "Whole alert (title and message)",
         "regex": "Part of the message (regex)"
+      }
+    },
+    "regex_source": {
+      "options": {
+        "message_title": "Message, then title",
+        "title_message": "Title, then message",
+        "title": "Title only",
+        "message": "Message only"
       }
     }
   },
@@ -169,6 +189,62 @@
           "description": "Text to speak."
         }
       }
+    },
+    "get_history": {
+      "name": "Get alert history",
+      "description": "Return saved alerts, newest first. Turn on Keep alert history in the integration options first.",
+      "fields": {
+        "days": {
+          "name": "Days",
+          "description": "Only alerts from the last this many days. Default: the whole kept history."
+        },
+        "limit": {
+          "name": "Limit",
+          "description": "Maximum number of alerts to return."
+        },
+        "search": {
+          "name": "Search",
+          "description": "Only alerts whose title, message, app or spoken text contains this (not case-sensitive)."
+        }
+      }
+    },
+    "preview": {
+      "name": "Preview spoken text",
+      "description": "Show what would be spoken for an alert with the current settings, and optionally say it. Handy for testing a regex or template.",
+      "fields": {
+        "last_alert": {
+          "name": "Use last alert",
+          "description": "Start from the last alert received. Fields below override it."
+        },
+        "title": {
+          "name": "Title",
+          "description": "Alert title to test with."
+        },
+        "message": {
+          "name": "Message",
+          "description": "Alert message to test with."
+        },
+        "app": {
+          "name": "App",
+          "description": "Pushover application name to test with."
+        },
+        "priority": {
+          "name": "Priority",
+          "description": "Pushover priority, -2 to 2."
+        },
+        "speak": {
+          "name": "Speak it",
+          "description": "Also say the result on the configured speakers."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "no_last_alert": {
+      "message": "No alert has been received yet, and there is no saved history to take one from."
+    },
+    "preview_nothing": {
+      "message": "Give a title and/or message, or turn on Use last alert."
     }
   }
 }

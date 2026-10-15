@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components import persistent_notification
@@ -32,6 +34,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
+    async_track_time_interval,
 )
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
@@ -42,6 +45,8 @@ from .client import STATUS_LOGIN_REQUIRED, STATUS_STOPPED, PushoverListener
 from .const import (
     CONF_EMERGENCY_MESSAGE,
     CONF_FALLBACK_NOTIFY,
+    CONF_HISTORY_DAYS,
+    CONF_MESSAGE_MODE,
     CONF_OFFLINE_ALERT_DELAY,
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
@@ -49,6 +54,7 @@ from .const import (
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
     DEFAULT_EMERGENCY_MESSAGE,
+    DEFAULT_HISTORY_DAYS,
     DEFAULT_OFFLINE_ALERT_DELAY,
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
@@ -57,13 +63,25 @@ from .const import (
     EVENT_ACK,
     EVENT_ALERT,
     ISSUE_STOPPED,
+    MAX_HISTORY_DAYS,
+    MAX_MESSAGE_INPUT,
+    MAX_TITLE_INPUT,
     MESSAGE_FIELDS,
+    MODE_REGEX,
     PLAYBACK_END_TIMEOUT,
     PLAYBACK_START_TIMEOUT,
     SIGNAL_UPDATE,
+    TEXT_TIMEOUT,
     WAKE_TIMEOUT,
 )
-from .text import build_text, clean, should_announce
+from .text import (
+    OUTCOME_ERROR,
+    OUTCOME_TIMEOUT,
+    build_spoken,
+    build_text,
+    clean,
+    should_announce,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _BAD_STATES = (STATE_UNAVAILABLE, STATE_UNKNOWN, None)
@@ -73,6 +91,109 @@ TTS_TIMEOUT = 45  # text-to-speech call (cloud engines can be slow)
 RECEIPT_LIFETIME = 3 * 3600  # Pushover emergency receipts expire within 3 h
 SPEAKER_SETTLE = 30  # wait this long at start-up for speakers to load
 STORE_VERSION = 1
+MAX_HISTORY_ENTRIES = 20000  # hard cap on the history file, whatever the age
+HISTORY_PRUNE_INTERVAL = timedelta(hours=24)
+
+
+def history_record(
+    msg: Mapping[str, Any],
+    received: datetime,
+    *,
+    queued: bool,
+    announced: bool,
+    spoken_text: str | None,
+) -> dict[str, Any]:
+    """One line of the history file (the raw alert, length-capped)."""
+    sent = api.as_int(msg.get("date"))
+    return {
+        "received": received.isoformat(timespec="seconds"),
+        "sent": (
+            dt_util.utc_from_timestamp(sent).isoformat(timespec="seconds")
+            if sent
+            else None
+        ),
+        "app": str(msg.get("app") or ""),
+        "priority": api.as_int(msg.get("priority")),
+        "title": str(msg.get("title") or "")[:MAX_TITLE_INPUT],
+        "message": str(msg.get("message") or "")[:MAX_MESSAGE_INPUT],
+        "queued": queued,
+        "announced": announced,
+        "spoken_text": spoken_text,
+    }
+
+
+def _parse_time(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt_util.UTC)
+
+
+def _read_lines(path: str) -> list[dict[str, Any]]:
+    if not os.path.exists(path):
+        return []
+    rows = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue  # a half-written line after a power cut
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def append_history(path: str, rows: list[dict[str, Any]]) -> None:
+    """Append rows (runs in the executor: small appends, kind to SD cards)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+
+
+def prune_history(path: str, days: int, now: datetime) -> int:
+    """Drop rows older than `days` (0 deletes the file). Returns rows kept."""
+    if days <= 0:
+        if os.path.exists(path):
+            os.remove(path)
+        return 0
+    rows = _read_lines(path)
+    cutoff = now - timedelta(days=days)
+    kept = [
+        r
+        for r in rows
+        if (when := _parse_time(r.get("received"))) is not None and when >= cutoff
+    ][-MAX_HISTORY_ENTRIES:]
+    if len(kept) != len(rows):
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in kept)
+        os.replace(tmp, path)
+    return len(kept)
+
+
+def read_history(
+    path: str, days: int, limit: int, search: str | None, now: datetime
+) -> list[dict[str, Any]]:
+    """Newest first, optionally filtered by age and a case-insensitive search."""
+    cutoff = now - timedelta(days=days) if days > 0 else None
+    needle = (search or "").strip().lower()
+    out: list[dict[str, Any]] = []
+    for row in reversed(_read_lines(path)):
+        if cutoff is not None:
+            when = _parse_time(row.get("received"))
+            if when is None or when < cutoff:
+                continue
+        if needle and not any(
+            needle in str(row.get(k) or "").lower()
+            for k in ("title", "message", "app", "spoken_text")
+        ):
+            continue
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
 
 
 class AlertTTS:
@@ -105,6 +226,12 @@ class AlertTTS:
         self._speaker_unsub: CALLBACK_TYPE | None = None
         self._timers: set[CALLBACK_TYPE] = set()
         self._started_at = time.monotonic()
+        # The last alert as received (not cleaned), for the preview action.
+        self._last_raw: dict[str, Any] | None = None
+        # Alert batches are processed one at a time, in arrival order.
+        self._alert_lock = asyncio.Lock()
+        self._history_lock = asyncio.Lock()
+        self.history_path = hass.config.path(DOMAIN, f"history_{entry.entry_id}.jsonl")
 
     # -- options (read live, so changes apply without a reload) ----------------
     @property
@@ -114,6 +241,11 @@ class AlertTTS:
     @property
     def speakers(self) -> list[str]:
         return list(self.options.get(CONF_SPEAKERS) or [])
+
+    @property
+    def history_days(self) -> int:
+        days = api.as_int(self.options.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS))
+        return max(0, min(days, MAX_HISTORY_DAYS))
 
     @property
     def pending_receipts(self) -> list[str]:
@@ -144,6 +276,13 @@ class AlertTTS:
 
         self.entry.async_on_unload(async_at_started(self.hass, _start))
 
+        async def _prune(_now: Any) -> None:
+            await self.async_prune_history()
+
+        self.entry.async_on_unload(
+            async_track_time_interval(self.hass, _prune, HISTORY_PRUNE_INTERVAL)
+        )
+
     @callback
     def async_options_changed(self) -> None:
         """(Re)subscribe to the selected speakers."""
@@ -154,6 +293,10 @@ class AlertTTS:
             self._speaker_unsub = async_track_state_change_event(
                 self.hass, self.speakers, self._on_speaker_change
             )
+        # Apply a changed (or switched off) history period straight away.
+        self.entry.async_create_background_task(
+            self.hass, self.async_prune_history(), f"{DOMAIN}_history_prune"
+        )
         self.update_entities()
 
     @callback
@@ -358,22 +501,53 @@ class AlertTTS:
         if not fresh:
             self.update_entities()
             return
+        # Working out the text runs the user's regular expression, so it
+        # happens in the background (in a worker thread, with a time limit)
+        # and the listener can delete the messages promptly and keep receiving.
+        self.entry.async_create_background_task(
+            self.hass,
+            self._process(fresh, wanted, queued, self.enabled),
+            f"{DOMAIN}_process",
+        )
+
+    async def _process(
+        self, fresh: list[dict], wanted: list[dict], queued: bool, enabled: bool
+    ) -> None:
+        async with self._alert_lock:
+            try:
+                await self._process_locked(fresh, wanted, queued, enabled)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Failed to process Pushover alerts")
+                if enabled and wanted:
+                    self.entry.async_create_background_task(
+                        self.hass, self._announce(None, False), f"{DOMAIN}_announce"
+                    )
+
+    async def _process_locked(
+        self, fresh: list[dict], wanted: list[dict], queued: bool, enabled: bool
+    ) -> None:
         last = fresh[-1]
         top = max(api.as_int(m.get("priority")) for m in fresh)
-        text = build_text(wanted, self.options) if wanted else None
-        announce = bool(wanted) and self.enabled
+        spoken = await self.compute_spoken(wanted) if wanted else None
+        text = spoken["text"] if spoken else None
+        announce = bool(wanted) and enabled
+        received = dt_util.utcnow()
 
+        self._last_raw = {
+            k: last.get(k) for k in ("title", "message", "app", "priority")
+        }
         self.last_alert = {
             "title": clean(last.get("title") or last.get("app")),
-            "message": clean(last.get("message")),
+            "message": clean(str(last.get("message") or "")[:MAX_MESSAGE_INPUT]),
             "app": last.get("app", ""),
             "priority": api.as_int(last.get("priority")),
             "count": len(fresh),
             "queued": queued,
             "announced": announce,
             "spoken_text": text if announce else None,
+            "spoken_outcome": spoken["outcome"] if spoken else None,
         }
-        self.last_alert_time = dt_util.utcnow()
+        self.last_alert_time = received
         self.hass.bus.async_fire(
             EVENT_ALERT,
             {
@@ -393,11 +567,88 @@ class AlertTTS:
 
         if announce:
             emergency = any(api.as_int(m.get("priority")) >= 2 for m in wanted)
-            # Speak in the background so the listener can delete the messages
-            # promptly and keep receiving.
             self.entry.async_create_background_task(
                 self.hass, self._announce(text, emergency), f"{DOMAIN}_announce"
             )
+
+        if self.history_days:
+            wanted_ids = {id(m) for m in wanted}
+            rows = [
+                history_record(
+                    m,
+                    received,
+                    queued=queued,
+                    announced=announce and id(m) in wanted_ids,
+                    spoken_text=text if id(m) in wanted_ids else None,
+                )
+                for m in fresh
+            ]
+            await self._write_history(rows)
+
+    async def compute_spoken(self, alerts: list[Mapping[str, Any]]) -> dict[str, Any]:
+        """build_spoken() with a time limit, so a runaway regex can't hang us."""
+        options = dict(self.options)
+        if options.get(CONF_MESSAGE_MODE) != MODE_REGEX:
+            return build_spoken(alerts, options)
+        try:
+            async with asyncio.timeout(TEXT_TIMEOUT):
+                return await self.hass.async_add_executor_job(
+                    build_spoken, alerts, options
+                )
+        except TimeoutError:
+            _LOGGER.warning(
+                "The regular expression took longer than %s s; spoke the fixed "
+                "phrase instead. Simplify the pattern",
+                TEXT_TIMEOUT,
+            )
+            outcome = OUTCOME_TIMEOUT
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Could not build the spoken text")
+            outcome = OUTCOME_ERROR
+        return {"text": self._fixed_phrase(), "outcome": outcome, "groups": {}}
+
+    # -- history -----------------------------------------------------------------
+    async def _write_history(self, rows: list[dict[str, Any]]) -> None:
+        async with self._history_lock:
+            try:
+                await self.hass.async_add_executor_job(
+                    append_history, self.history_path, rows
+                )
+            except OSError as err:
+                _LOGGER.warning("Could not save alert history: %s", err)
+
+    async def async_prune_history(self) -> None:
+        async with self._history_lock:
+            try:
+                await self.hass.async_add_executor_job(
+                    prune_history,
+                    self.history_path,
+                    self.history_days,
+                    dt_util.utcnow(),
+                )
+            except OSError as err:
+                _LOGGER.warning("Could not prune alert history: %s", err)
+
+    async def get_history(
+        self, days: int | None, limit: int, search: str | None
+    ) -> list[dict[str, Any]]:
+        return await self.hass.async_add_executor_job(
+            read_history,
+            self.history_path,
+            self.history_days if days is None else days,
+            limit,
+            search,
+            dt_util.utcnow(),
+        )
+
+    async def last_raw_alert(self) -> dict[str, Any] | None:
+        """The last alert received; from history if HA restarted since."""
+        if self._last_raw is not None:
+            return dict(self._last_raw)
+        rows = await self.get_history(0, 1, None)
+        if rows:
+            return {k: rows[0].get(k) for k in ("title", "message", "app", "priority")}
+        return None
 
     async def _announce(self, text: str | None, emergency: bool) -> None:
         # Right after start-up, give speakers a moment to load.
