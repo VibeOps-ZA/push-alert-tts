@@ -78,6 +78,8 @@
           "spoken_template": "Spoken template (optional)",
           "part_max_length": "Maximum length of each template part",
           "tidy_text": "Tidy text for speech",
+          "expand_abbreviations": "Expand common abbreviations",
+          "remove_repeated_words": "Remove repeated words (template)",
           "max_length": "Maximum spoken length",
           "multiple_message": "Phrase for several queued alerts",
           "emergency_message": "Phrase for emergency repeats",
@@ -102,6 +104,8 @@
           "spoken_template": "Regex mode only. Builds the sentence from your regex's named groups: write each group's name in curly brackets, e.g. Alert, then the name host in curly brackets. Also available: app, title, message, priority, priority_name and group numbers. Empty groups are skipped; if fewer than half are filled the fixed phrase is spoken instead. See the README for examples.",
           "part_max_length": "Characters. Each template part is cut at a word to this length, so one long value can't take over. 0 = no limit.",
           "tidy_text": "Reads underscores as spaces, dots between words (host.name) as spaces and | as a pause, and removes doubled or dangling commas.",
+          "expand_abbreviations": "Speaks common IT shorthand in full, e.g. prod as production, db as database, lb01 as load balancer 01. Whole words only. The full list is in the README.",
+          "remove_repeated_words": "Spoken template only. Leaves out words an earlier part of the sentence already said, so names repeated in an alert are only spoken once.",
           "history_days": "Days. Saves every received alert to a small file in your config folder so you can look back with the get_history action. 0 = off (and deletes the saved history)."
         }
       }

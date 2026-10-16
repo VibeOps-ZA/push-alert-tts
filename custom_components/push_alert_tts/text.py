@@ -11,9 +11,10 @@ Safety nets, in the order they apply:
 2. Each template placeholder is cut to ``part_max_length`` characters.
 3. A template that ends up less than half filled is not spoken; the fixed
    phrase is used instead (so you never hear "Alert, , , ").
-4. The whole sentence is cut to ``max_length`` (and never more than
+4. Words already spoken by an earlier placeholder are dropped (optional).
+5. The whole sentence is cut to ``max_length`` (and never more than
    ``HARD_MAX_SPOKEN``) characters, at a word boundary.
-5. The coordinator gives the regular expression ``TEXT_TIMEOUT`` seconds; a
+6. The coordinator gives the regular expression ``TEXT_TIMEOUT`` seconds; a
    runaway pattern falls back to the fixed phrase.
 """
 
@@ -27,6 +28,7 @@ from typing import Any
 from .api import as_int
 from .const import (
     CONF_APP_FILTER,
+    CONF_EXPAND_ABBREVIATIONS,
     CONF_FIXED_MESSAGE,
     CONF_MAX_LENGTH,
     CONF_MESSAGE_MODE,
@@ -35,6 +37,7 @@ from .const import (
     CONF_PART_MAX_LENGTH,
     CONF_REGEX,
     CONF_REGEX_SOURCE,
+    CONF_REMOVE_REPEATS,
     CONF_SPOKEN_TEMPLATE,
     CONF_TIDY_TEXT,
     DEFAULT_FIXED_MESSAGE,
@@ -67,6 +70,47 @@ _PLACEHOLDER_RE = re.compile(r"\{\{|\}\}|\{([A-Za-z0-9_]+)\}")
 _EDGE_CHARS = " ,;:|"
 
 REGEX_FLAGS = re.IGNORECASE | re.DOTALL | re.MULTILINE
+
+# Common IT shorthand, spoken in full when "Expand common abbreviations" is on.
+# Whole words only (a number may follow: "lb01" -> "load balancer 01").
+# Deliberately conservative: nothing that is already a speakable word or that
+# has two common meanings (e.g. "sec", "auth", "ms").
+ABBREVIATIONS: dict[str, str] = {
+    "avg": "average",
+    "cnt": "count",
+    "conn": "connection",
+    "conns": "connections",
+    "db": "database",
+    "dbs": "databases",
+    "dev": "development",
+    "env": "environment",
+    "err": "error",
+    "errs": "errors",
+    "k8s": "Kubernetes",
+    "lb": "load balancer",
+    "mem": "memory",
+    "mgmt": "management",
+    "msg": "message",
+    "msgs": "messages",
+    "prod": "production",
+    "qty": "quantity",
+    "req": "request",
+    "reqs": "requests",
+    "resp": "response",
+    "srv": "server",
+    "stg": "staging",
+    "svc": "service",
+    "svcs": "services",
+    "txn": "transaction",
+    "txns": "transactions",
+}
+_ABBREVIATION_RE = re.compile(
+    r"(?<![A-Za-z0-9])("
+    + "|".join(sorted(map(re.escape, ABBREVIATIONS), key=len, reverse=True))
+    + r")(?![A-Za-z])(\d*)",
+    re.IGNORECASE,
+)
+_WORD_KEY_RE = re.compile(r"[^\w]+")
 
 PRIORITY_NAMES = {-2: "lowest", -1: "low", 0: "normal", 1: "high", 2: "emergency"}
 # Placeholders that always exist, whatever the regular expression captures.
@@ -130,6 +174,32 @@ def tidy(text: str) -> str:
     text = _REPEATED_SEP_RE.sub(r"\1", text)
     text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
     return _SPACE_RE.sub(" ", text).strip(_EDGE_CHARS)
+
+
+def expand_abbreviations(text: str) -> str:
+    """``lb01 prod db`` -> ``load balancer 01 production database``."""
+    if not text:
+        return ""
+
+    def _sub(m: re.Match[str]) -> str:
+        word = ABBREVIATIONS[m.group(1).lower()]
+        return f"{word} {m.group(2)}" if m.group(2) else word
+
+    return _ABBREVIATION_RE.sub(_sub, text)
+
+
+def remove_seen_words(text: str, seen: set[str]) -> str:
+    """Drop words already in ``seen`` (case-insensitive), then remember these."""
+    kept = []
+    for word in text.split():
+        key = _WORD_KEY_RE.sub("", word).lower()
+        if key and key in seen:
+            continue
+        kept.append(word)
+    for word in text.split():
+        if key := _WORD_KEY_RE.sub("", word).lower():
+            seen.add(key)
+    return " ".join(kept).strip(_EDGE_CHARS)
 
 
 def truncate(text: str, max_length: int) -> str:
@@ -219,10 +289,17 @@ def render_template(
     values: Mapping[str, str],
     part_max_length: int,
     tidy_parts: bool,
+    expand: bool = False,
+    remove_repeats: bool = False,
 ) -> tuple[str, int, int]:
-    """Fill a template. Returns (text, placeholders filled, placeholders used)."""
+    """Fill a template. Returns (text, placeholders filled, placeholders used).
+
+    A placeholder emptied only because all its words were already spoken still
+    counts as filled (it had a value), so it can't trigger the fallback.
+    """
     filled = 0
     used = 0
+    seen: set[str] = set()
 
     def _sub(m: re.Match[str]) -> str:
         nonlocal filled, used
@@ -235,10 +312,13 @@ def render_template(
         value = clean(values.get(m.group(1)))
         if tidy_parts:
             value = tidy(value)
-        value = cut_part(value, part_max_length)
+        if expand:
+            value = expand_abbreviations(value)
         if value:
             filled += 1
-        return value
+        if remove_repeats:
+            value = remove_seen_words(value, seen)
+        return cut_part(value, part_max_length)
 
     text = _PLACEHOLDER_RE.sub(_sub, template)
     # Tidy the joins left by empty placeholders: "a, , b" -> "a, b".
@@ -291,10 +371,12 @@ def build_spoken(
     msg = alerts[0]
     mode = options.get(CONF_MESSAGE_MODE, MODE_FIXED)
     do_tidy = bool(options.get(CONF_TIDY_TEXT, True))
+    do_expand = bool(options.get(CONF_EXPAND_ABBREVIATIONS, False))
     groups: dict[str, str] = {}
 
     def _tidy(value: str) -> str:
-        return tidy(value) if do_tidy else value
+        value = tidy(value) if do_tidy else value
+        return expand_abbreviations(value) if do_expand else value
 
     if mode == MODE_TITLE:
         outcome = OUTCOME_TITLE
@@ -323,6 +405,8 @@ def build_spoken(
                 template_values(msg, match),
                 as_int(options.get(CONF_PART_MAX_LENGTH, DEFAULT_PART_MAX_LENGTH)),
                 do_tidy,
+                do_expand,
+                bool(options.get(CONF_REMOVE_REPEATS, True)),
             )
             if used and (filled == 0 or filled * 2 < used):
                 return {"text": fixed, "outcome": OUTCOME_TOO_FEW, "groups": groups}
