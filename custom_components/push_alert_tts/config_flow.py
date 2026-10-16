@@ -40,6 +40,7 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
     CONF_EMERGENCY_MESSAGE,
+    CONF_EXPAND_ABBREVIATIONS,
     CONF_FALLBACK_NOTIFY,
     CONF_FIXED_MESSAGE,
     CONF_HISTORY_DAYS,
@@ -51,6 +52,7 @@ from .const import (
     CONF_PART_MAX_LENGTH,
     CONF_REGEX,
     CONF_REGEX_SOURCE,
+    CONF_REMOVE_REPEATS,
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
     CONF_SECRET,
@@ -397,6 +399,13 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_TIDY_TEXT, default=opt(CONF_TIDY_TEXT, True)
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_EXPAND_ABBREVIATIONS,
+                    default=opt(CONF_EXPAND_ABBREVIATIONS, False),
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_REMOVE_REPEATS, default=opt(CONF_REMOVE_REPEATS, True)
                 ): BooleanSelector(),
                 vol.Optional(
                     CONF_MAX_LENGTH, default=opt(CONF_MAX_LENGTH, DEFAULT_MAX_LENGTH)

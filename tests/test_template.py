@@ -5,6 +5,7 @@ import pytest
 from custom_components.push_alert_tts.text import (
     build_spoken,
     build_text,
+    expand_abbreviations,
     render_template,
     tidy,
     unknown_placeholders,
@@ -131,3 +132,39 @@ def test_render_counts():
 def test_unknown_placeholders():
     assert unknown_placeholders("{s1} {app} {2}", r"(?P<s1>a)(b)") == []
     assert unknown_placeholders("{nope} {3}", r"(a)") == ["nope", "3"]
+
+
+def test_repeated_words_removed():
+    title = "[P1] Re-Triggered: za_mtn_momo_hr | threshold | integration momo mtn | x"
+    assert build_text([alert(title)], OPTS) == (
+        "Alert, za mtn momo hr, threshold, integration, Re-Triggered"
+    )
+    keep = {**OPTS, "remove_repeated_words": False}
+    assert "integration momo mtn" in build_text([alert(title)], keep)
+
+
+def test_part_emptied_by_repeats_still_counts_as_filled():
+    # s2 and s3 repeat s1 entirely: 4 of 4 filled, so no fallback.
+    title = "[P1] Triggered: disk db01 | disk | db01"
+    result = build_spoken([alert(title)], OPTS)
+    assert result["outcome"] == "template"
+    assert result["text"] == "Alert, disk db01, Triggered"
+
+
+def test_expand_abbreviations():
+    opts = {**OPTS, "expand_abbreviations": True, "max_length": 0}
+    title = "[P1] Triggered: logs | error or fatal | telkom.lb01.prod"
+    assert build_text([alert(title)], opts) == (
+        "Alert, logs, error or fatal, telkom load balancer 01, Triggered"
+    )  # "production" is cut by the 30-character part limit
+    assert expand_abbreviations("DB svc k8s prodx dbase") == (
+        "database service Kubernetes prodx dbase"
+    )
+    assert "load balancer" not in build_text([alert(title)], OPTS)  # off by default
+
+
+def test_expand_in_title_mode():
+    opts = {"message_mode": "title", "expand_abbreviations": True}
+    assert build_text([alert("prod db_02 err")], opts) == (
+        "production database 02 error"
+    )

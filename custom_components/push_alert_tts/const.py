@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -47,6 +47,8 @@ CONF_REGEX_SOURCE = "regex_source"
 CONF_PART_MAX_LENGTH = "part_max_length"
 CONF_TIDY_TEXT = "tidy_text"
 CONF_HISTORY_DAYS = "history_days"
+CONF_EXPAND_ABBREVIATIONS = "expand_abbreviations"
+CONF_REMOVE_REPEATS = "remove_repeated_words"
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"

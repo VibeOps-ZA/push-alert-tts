@@ -345,7 +345,8 @@ When you click Submit, a template that uses a name your regex doesn't capture
 1. Each placeholder is cut (at a word) to the **maximum length of each
    template part**.
 2. Empty placeholders are left out together with their commas, so a missing
-   part never sounds like "Alert, , , Triggered".
+   part never sounds like "Alert, , , Triggered". With **Remove repeated
+   words** on, words an earlier placeholder already said are left out too.
 3. If **fewer than half** of the placeholders are filled (or none are), the
    alert probably isn't in the format you expected, so the **fixed phrase** is
    spoken instead. If the regex doesn't match at all, the fixed phrase is also
@@ -374,6 +375,35 @@ On by default. Makes machine-style text sound natural before it is spoken
 | `a , , b,` | "a, b" |
 
 Turn it off if you want the text exactly as received.
+
+### Expand common abbreviations
+
+Off by default. Speaks common IT shorthand in full, so `telkom.lb01.prod`
+becomes "telkom load balancer 01 production". It only replaces whole words
+(a number straight after is fine, e.g. `db01`), works in every mode except
+*Fixed phrase*, and ignores upper/lower case. The list:
+
+`avg` average, `cnt` count, `conn` connection, `conns` connections, `db` database, `dbs` databases, `dev` development, `env` environment, `err` error, `errs` errors, `k8s` Kubernetes, `lb` load balancer, `mem` memory, `mgmt` management, `msg` message, `msgs` messages, `prod` production, `qty` quantity, `req` request, `reqs` requests, `resp` response, `srv` server, `stg` staging, `svc` service, `svcs` services, `txn` transaction, `txns` transactions.
+
+The list is deliberately short: words that are already easy to say (`app`,
+`cpu`) or that have two common meanings (`sec`, `auth`, `ms`) are left alone.
+Expanded words are longer, so you may want to raise the **maximum length of
+each template part** when you turn this on.
+
+### Remove repeated words (template)
+
+On by default; only affects the spoken template. A word that an earlier part
+of the sentence already said is left out, so a name repeated in the alert is
+spoken once. For the title
+`[P1] Re-Triggered: za_mtn_momo_hr | threshold | integration momo mtn`:
+
+| Setting | Spoken |
+|---|---|
+| On | "Alert, za mtn momo hr, threshold, integration, Re-Triggered" |
+| Off | "Alert, za mtn momo hr, threshold, integration momo mtn, Re-Triggered" |
+
+A part that ends up empty because all its words were already said is simply
+left out; it still counts as *filled* for the "fewer than half" safety net.
 
 ### Maximum spoken length
 

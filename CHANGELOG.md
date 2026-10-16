@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+
+### Added
+- **Expand common abbreviations** option (off by default): speaks common IT
+  shorthand in full, e.g. `prod` production, `db01` database 01, `lb`
+  load balancer. Whole words only; the full list is in the README.
+- **Remove repeated words** option for the spoken template (on by default):
+  words an earlier part already said are left out, e.g. "integration momo
+  mtn" after "za mtn momo hr" is spoken as "integration".
+
+### Changed
+- Existing spoken templates now leave out repeated words. Turn **Remove
+  repeated words** off to keep the v0.3.0 behaviour.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added
