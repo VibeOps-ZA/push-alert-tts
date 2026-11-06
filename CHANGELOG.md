@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-06
+
+### Changed
+- Documentation, tests and the changelog use only generic example names;
+  the options-form screenshot no longer shows a regional voice.
+
 ## [0.5.1] - 2026-11-06
 
 ### Added
