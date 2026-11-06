@@ -2,7 +2,7 @@
 
 import pytest
 
-from custom_components.push_alert_tts.text import (
+from custom_components.push_alert_tts.spoken import (
     build_spoken,
     build_text,
     expand_abbreviations,

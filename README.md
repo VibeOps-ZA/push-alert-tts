@@ -36,6 +36,7 @@ night, and you want the bedroom speaker to wake you as well as your phone.
 15. [Troubleshooting](#15-troubleshooting)
 16. [Updating and removing](#16-updating-and-removing)
 17. [FAQ](#17-faq)
+18. [AI wording with a local LLM (optional)](#18-ai-wording-with-a-local-llm-optional)
 
 ---
 
@@ -476,7 +477,10 @@ When on, every alert received (spoken or not) is added to a small file,
 `push_alert_tts/history_<entry id>.jsonl` in your Home Assistant
 [configuration folder](https://www.home-assistant.io/docs/configuration/).
 Each line holds the time, app, priority, title, message (up to 4,000
-characters), whether it was announced and what was spoken. Older lines are
+characters) and its original length, the alert's link (if any), whether it was
+announced and what was spoken. With [AI wording](#18-ai-wording-with-a-local-llm-optional)
+on it also holds the normal text, the AI's answer, which of the two was spoken
+and why, and how long each step took (see [section 18](#what-is-recorded)). Older lines are
 removed once a day, and there is a cap of 20,000 alerts whatever the period.
 As a guide, 1,000 alerts take about 1 MB.
 
@@ -484,6 +488,15 @@ Read it with the [`push_alert_tts.get_history`](#actions) action. Setting the
 period back to `0` stops recording and **deletes** the saved history. The
 file is included in Home Assistant backups, and is deleted if you delete the
 integration.
+
+### AI wording *(optional)*
+
+A collapsible **AI wording** section at the bottom of the settings lets a
+language model that you run yourself (for example
+[Ollama](https://ollama.com/) on a PC) word each alert as one short sentence.
+It is off by default and nothing changes until you turn it on. Everything
+about it, including setup, is in
+[section 18](#18-ai-wording-with-a-local-llm-optional).
 
 ---
 
@@ -544,7 +557,9 @@ If you renamed anything, use the names shown on the device page instead.
 | **Acknowledge** `button.push_alert_tts_acknowledge` | Acknowledge pending emergency alerts and stop repeats ([section 12](#12-emergency-alerts-repeats-and-acknowledge)). |
 | **Test announcement** `button.push_alert_tts_test_announcement` | Speak the fixed phrase now. |
 | **Pushover connected** `binary_sensor.push_alert_tts_pushover_connected` | Connected / Disconnected. Its *status* attribute is `connected`, `reconnecting`, `login_required` or `stopped`, and *last_error* says why. |
-| **Last alert** `sensor.push_alert_tts_last_alert` | When the last alert arrived. Attributes: title, message, app, priority, count, queued, announced, spoken_text, pending_emergencies. |
+| **Last alert** `sensor.push_alert_tts_last_alert` | When the last alert arrived. Attributes: title, message, app, priority, count, queued, announced, spoken_text, pending_emergencies, and (since 0.5.0) spoken_source (`ai` or `filter`), filter_text, ai_text, ai_reason, ai_seconds and timings. |
+| **AI review** `sensor.push_alert_tts_ai_review` | How many alerts the AI looked at in the last 3 days. Its *alerts* attribute lists them, newest first: the alert as received, what was spoken, the AI's text and the reason if it wasn't used. Not saved in the recorder database. See [section 18](#18-ai-wording-with-a-local-llm-optional). |
+| **AI correction** `text.push_alert_tts_ai_correction` | Type a correction for the AI in plain words and press Enter: it is added to the AI memory and the box clears. Its *memory* attribute shows the whole memory. |
 
 About speakers:
 - A **muted** speaker is unmuted for the announcement and muted again afterwards.
@@ -776,6 +791,22 @@ Fired when alerts are acknowledged from Home Assistant.
   | `fallback_timeout` | The regex took over 2 seconds: fixed phrase |
   | `fallback_error` | Something unexpected went wrong (see the log): fixed phrase |
 
+  With [AI wording](#18-ai-wording-with-a-local-llm-optional) on, the
+  preview also asks the AI (turn off **Use AI wording** to skip it) and the
+  response adds `spoken_source` (`ai` or `filter`), `filter_text` (the
+  normal text), `ai_text`, `ai_answer` (the AI's raw answer), `ai_reason` (why
+  the AI text was not used, if it wasn't) and `ai_seconds`.
+
+- `push_alert_tts.add_ai_memory` adds a plain-language correction to the AI
+  memory (several lines add several). `push_alert_tts.get_ai_memory` returns
+  the memory. See [section 18](#18-ai-wording-with-a-local-llm-optional).
+
+  ```yaml
+  action: push_alert_tts.add_ai_memory
+  data:
+    text: "Say HAProxy as HA proxy, never abbreviate it."
+  ```
+
 - `push_alert_tts.get_history` returns saved alerts, newest first (needs
   *Keep alert history for* above `0`). Options: `days` (only the last N days),
   `limit` (default 50, up to 1,000) and `search` (text to look for in the
@@ -843,6 +874,174 @@ Pushover apps do.
 **What if my power or internet goes down?** Nothing at home can announce
 anything then. Your phone remains your main alert. Use Pushover's own
 *Critical Alerts* setting on your phone for emergencies.
+
+---
+
+## 18. AI wording with a local LLM (optional)
+
+Monitoring alerts are often long and full of host names, links and codes.
+A regex and template (section 6) can pick parts out, but a **language model
+(LLM)** can read the whole alert and say it in one short, natural sentence,
+for example:
+
+> *P1 alert at Acme on database 1. Disk usage over 90 percent.*
+
+Push Alert TTS can ask an LLM **that you run yourself** to word each alert.
+It is **off by default**.
+
+### Safe by design
+
+- The normal text (fixed phrase, title, regex or template, exactly as set in
+  section 6) is **always worked out first**. It is spoken whenever the AI can't
+  help: AI wording turned off, the LLM server unreachable, no answer within
+  the time limit, an empty answer, an answer that is too long, contains
+  symbols, links or code, or doesn't start the way you asked (see *AI answer
+  must start with*). **No alert is ever lost because of the AI.**
+- If the LLM server can't be reached at all, the AI is skipped for the next
+  minute, so a run of alerts isn't held up while the PC is off.
+- **Emergency** (priority 2) alerts wait for the AI at most a few seconds
+  (default 5) and are then announced regardless.
+- Several queued alerts arriving together still get the
+  *Phrase for several queued alerts*, without the AI.
+- The AI only rewords: it can't stop, delay beyond your time limit or
+  suppress an alert.
+- The alert is sent **exactly as received** (title and message, nothing
+  removed or changed), together with your instructions and memory. Use a
+  server on your own network if your alerts contain anything private.
+
+### What you need
+
+1. A computer that stays on while you want alerts spoken, ideally with a
+   graphics card (a laptop GPU with 6 GB is plenty for a small model).
+2. An LLM server on it. The simplest is **Ollama**:
+   - Download and install it from [ollama.com/download](https://ollama.com/download).
+   - Download a model, e.g. in a terminal: `ollama pull qwen3.5:4b`
+     (browse others at [ollama.com/library](https://ollama.com/library)).
+     Small instruction-following models (3-9 billion parameters) work well
+     and answer in a few seconds.
+   - Make Ollama listen on your network, not just on the PC itself: set the
+     environment variable `OLLAMA_HOST=0.0.0.0:11434` and restart Ollama
+     ([how, per operating system](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-do-i-configure-ollama-server)).
+   - Allow TCP port 11434 through the PC's firewall **from your home network
+     only**. Ollama has no password: anything that can reach the port can use it.
+   - Give the PC a fixed IP address (a DHCP reservation in your router), so
+     the address below doesn't change.
+   - Check from another device: open `http://<pc address>:11434/api/version`
+     in a browser. It should show a version number.
+
+   Other servers that offer an **OpenAI-compatible** chat API also work, for
+   example [LM Studio](https://lmstudio.ai/docs), llama.cpp's server, vLLM or
+   LocalAI (and OpenAI itself, with an API key).
+
+### Turning it on
+
+**Settings → Devices & services → Push Alert TTS → Configure**, open the
+**AI wording (optional, local LLM)** section at the bottom, fill it in and
+**Submit**. Changes apply straight away; no restart is needed.
+
+| Setting | What it does |
+|---|---|
+| **Use AI wording** | On/off. Off = alerts are spoken exactly as before 0.5.0. |
+| **Server type** | **Ollama**, or **OpenAI-compatible** for the other servers. With Ollama the model's "thinking" is switched off, which makes thinking models answer far faster. |
+| **LLM server address** | Ollama: `http://<pc address>:11434`. LM Studio: `http://<pc address>:1234/v1`. Only the address and port are needed; the rest of the path is added. |
+| **Model** | The model name exactly as the server lists it, e.g. `qwen3.5:4b` (`ollama list` shows them). |
+| **API key** *(optional)* | Only if your server needs one. It is saved in Home Assistant's storage and removed from diagnostics downloads. |
+| **Wait for the AI at most** | Seconds (default 60). The longest an alert waits for the AI before the normal text is spoken. A long limit gives a busy or just-woken PC the best chance; it only matters when the PC is on but slow, because an unreachable server is noticed within about 5 seconds. |
+| **Wait at most (emergency alerts)** | Seconds (default 5) for priority 2 alerts. |
+| **Maximum words** | Goal length (default 20). It is given to the AI as `{max_words}` in the instructions, and answers longer than about one and a half times this are not used. |
+| **Instructions for the AI** | What the AI is told before each alert. The default asks for a short spoken summary and no symbols. Edit it to get a fixed shape, e.g. *Reply with exactly this shape: &lt;level&gt; alert at &lt;customer&gt; on &lt;server&gt;. &lt;reason&gt;.* |
+| **AI answer must start with** *(optional)* | A [regular expression](https://docs.python.org/3/library/re.html#regular-expression-syntax) the answer must match at its start, e.g. `^(P\d alert|Alert) at ` for the shape above. Answers that don't match are not used. Empty = any speakable answer. |
+| **AI memory** | Plain-language corrections, one per line, sent with **every** alert (see below). |
+
+Tip: test before you rely on it. Run `push_alert_tts.preview` with
+`last_alert: true` (section 14) and compare `ai_text` with `filter_text`.
+
+### Teaching it: the AI memory
+
+When the AI says something wrong, tell it in plain words, for example:
+
+- *Say HAProxy as HA proxy, never abbreviate it.*
+- *Hosts starting with shop are the Shop client; always say Shop.*
+- *For the xyz servers, leave the server name out.*
+
+Each correction becomes a line in the AI memory and is sent with every alert
+from then on. Three ways to add one:
+
+1. Type it in the **AI correction** box (`text.push_alert_tts_ai_correction`,
+   max 255 characters) on a dashboard or the device page and press Enter.
+2. The `push_alert_tts.add_ai_memory` action (section 14), e.g. from a script.
+3. The **AI memory** field in the settings, where you can also edit or remove
+   lines.
+
+The memory is saved in `push_alert_tts/ai_memory_<entry id>.txt` in your
+[configuration folder](https://www.home-assistant.io/docs/configuration/).
+Before every change the previous version is copied to
+`push_alert_tts/ai_memory_versions/` (the 20 newest are kept), so a bad change
+can be undone by copying a version back (then reload the integration). Both
+are in Home Assistant backups. Keep the memory short and clear: very long
+memories make every answer slower.
+
+### Reviewing what it says
+
+The **AI review** sensor lists the alerts of the last 3 days (up to 50) with
+the alert as received and what was spoken. This card shows them as a table,
+with the correction box underneath. Click **+ Add card → Manual** and paste:
+
+```yaml
+type: vertical-stack
+cards:
+  - type: markdown
+    title: AI wording - last 3 days
+    content: >-
+      {% set rows = state_attr('sensor.push_alert_tts_ai_review', 'alerts') or [] %}
+      {% if rows %}
+      <table><tr><th>Received</th><th>Alert</th><th>Spoken</th></tr>
+      {% for r in rows %}
+      <tr><td>{{ as_timestamp(r.received) | timestamp_custom('%d %b %H:%M') }}</td>
+      <td><details><summary>{{ (r.alert or '').split('\n')[0][:80] | e }}</summary>{{ (r.alert or '') | e | replace('\n', '<br>') }}</details></td>
+      <td>{{ (r.spoken or '') | e }}{% if r.source != 'ai' %} <i>(normal text: {{ r.reason }})</i>{% endif %}</td></tr>
+      {% endfor %}</table>
+      {% else %}No alerts in the last 3 days.{% endif %}
+  - type: entities
+    entities:
+      - entity: text.push_alert_tts_ai_correction
+        name: Tell the AI what to improve
+```
+
+([Markdown card](https://www.home-assistant.io/dashboards/markdown/),
+[text entities](https://www.home-assistant.io/integrations/text/).)
+
+### What is recorded
+
+With *Keep alert history for* above 0, each spoken alert's history line also
+holds `filter_text`, `ai_text`, `ai_answer` (the raw answer), `spoken_source`
+(`ai` or `filter`), `ai_reason`, `ai_seconds` and `timings`, all in
+milliseconds after the alert reached Home Assistant unless noted:
+
+| Timing | Meaning |
+|---|---|
+| `pushover_delay_s` | Seconds from when the alert was sent to Pushover until it reached Home Assistant |
+| `text_ms` | Normal text worked out |
+| `ai_done_ms` | AI answered (or gave up) |
+| `speak_start_ms` | Announcement started (after any announcement already playing) |
+| `tts_call_ms` / `tts_done_ms` | Text-to-speech asked / audio ready |
+| `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it) |
+
+`ai_reason` values: `llm_unreachable`, `llm_unreachable_recently` (skipped
+for a minute after a failed connection), `llm_timeout`, `llm_http_error`,
+`llm_bad_response`, `llm_empty`, `llm_too_long`, `llm_symbols`,
+`llm_wrong_shape` (didn't match *AI answer must start with*),
+`several_alerts`, `llm_error`; empty when the AI text was used.
+
+### Troubleshooting AI wording
+
+| Problem | What to check |
+|---|---|
+| Always the normal text, reason `llm_unreachable` | The address and port, `OLLAMA_HOST` on the PC, the PC's firewall, and that the PC is awake. Open `http://<pc address>:11434/api/version` from another device. |
+| Reason `llm_timeout` | The model is too big or the PC is busy (games use the graphics card). Try a smaller model or a longer time limit. The first answer after the model loads is slower. |
+| Reason `llm_http_error` | Usually a wrong model name. Check `ollama list`. |
+| Reason `llm_wrong_shape` / `llm_symbols` / `llm_too_long` | Make the instructions stricter, add a memory line, or relax *AI answer must start with* / *Maximum words*. |
+| Wrong names or words | Add a correction to the AI memory. |
 
 ---
 

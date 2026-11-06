@@ -1,23 +1,55 @@
 {
   "entity": {
     "switch": {
-      "repeat_until_ack": { "default": "mdi:repeat" }
+      "repeat_until_ack": {
+        "default": "mdi:repeat"
+      }
     },
     "number": {
-      "volume": { "default": "mdi:volume-high" }
+      "volume": {
+        "default": "mdi:volume-high"
+      }
     },
     "button": {
-      "acknowledge": { "default": "mdi:bell-check" },
-      "test": { "default": "mdi:bullhorn" }
+      "acknowledge": {
+        "default": "mdi:bell-check"
+      },
+      "test": {
+        "default": "mdi:bullhorn"
+      }
     },
     "sensor": {
-      "last_alert": { "default": "mdi:bell-alert" }
+      "last_alert": {
+        "default": "mdi:bell-alert"
+      },
+      "ai_review": {
+        "default": "mdi:robot-outline"
+      }
+    },
+    "text": {
+      "ai_correction": {
+        "default": "mdi:brain"
+      }
     }
   },
   "services": {
-    "acknowledge": { "service": "mdi:bell-check" },
-    "speak": { "service": "mdi:bullhorn" },
-    "get_history": { "service": "mdi:history" },
-    "preview": { "service": "mdi:text-to-speech" }
+    "acknowledge": {
+      "service": "mdi:bell-check"
+    },
+    "speak": {
+      "service": "mdi:bullhorn"
+    },
+    "get_history": {
+      "service": "mdi:history"
+    },
+    "preview": {
+      "service": "mdi:text-to-speech"
+    },
+    "add_ai_memory": {
+      "service": "mdi:brain"
+    },
+    "get_ai_memory": {
+      "service": "mdi:brain"
+    }
   }
 }

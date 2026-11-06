@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -49,6 +49,46 @@ CONF_TIDY_TEXT = "tidy_text"
 CONF_HISTORY_DAYS = "history_days"
 CONF_EXPAND_ABBREVIATIONS = "expand_abbreviations"
 CONF_REMOVE_REPEATS = "remove_repeated_words"
+
+# AI wording (optional local LLM). Stored flat in the options; shown in a
+# collapsible "AI wording" section of the options form.
+CONF_AI_SECTION = "ai_wording"
+CONF_AI_ENABLED = "ai_enabled"
+CONF_AI_API = "ai_api"
+CONF_AI_URL = "ai_url"
+CONF_AI_MODEL = "ai_model"
+CONF_AI_API_KEY = "ai_api_key"
+CONF_AI_TIMEOUT = "ai_timeout"
+CONF_AI_EMERGENCY_TIMEOUT = "ai_emergency_timeout"
+CONF_AI_MAX_WORDS = "ai_max_words"
+CONF_AI_INSTRUCTIONS = "ai_instructions"
+CONF_AI_START_PATTERN = "ai_start_pattern"
+CONF_AI_MEMORY = "ai_memory"  # form field only; the memory lives in a file
+AI_OPTION_KEYS = (
+    CONF_AI_ENABLED,
+    CONF_AI_API,
+    CONF_AI_URL,
+    CONF_AI_MODEL,
+    CONF_AI_API_KEY,
+    CONF_AI_TIMEOUT,
+    CONF_AI_EMERGENCY_TIMEOUT,
+    CONF_AI_MAX_WORDS,
+    CONF_AI_INSTRUCTIONS,
+    CONF_AI_START_PATTERN,
+)
+AI_API_OLLAMA = "ollama"
+AI_API_OPENAI = "openai"
+AI_APIS = [AI_API_OLLAMA, AI_API_OPENAI]
+DEFAULT_AI_TIMEOUT = 60
+MAX_AI_TIMEOUT = 600
+DEFAULT_AI_EMERGENCY_TIMEOUT = 5
+DEFAULT_AI_MAX_WORDS = 20
+AI_CONNECT_TIMEOUT = 5  # seconds to open the connection to the LLM
+AI_OFFLINE_SKIP = 60  # after a connection failure, skip the LLM this long
+AI_MEMORY_VERSIONS = 20  # earlier copies of the AI memory kept
+AI_MEMORY_LINE_MAX = 500  # characters per memory line
+AI_REVIEW_DAYS = 3  # the AI review sensor shows this many days
+AI_REVIEW_MAX = 50  # ... and at most this many alerts
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"

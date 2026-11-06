@@ -64,3 +64,17 @@ preview:
       default: false
       selector:
         boolean:
+    use_ai:
+      required: false
+      default: true
+      selector:
+        boolean:
+add_ai_memory:
+  fields:
+    text:
+      required: true
+      example: "Say HAProxy as HA proxy, never abbreviate it."
+      selector:
+        text:
+          multiline: true
+get_ai_memory:

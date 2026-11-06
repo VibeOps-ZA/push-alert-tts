@@ -9,9 +9,16 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 
 from . import AlertTTSConfigEntry
-from .const import CONF_DEVICE_ID, CONF_SECRET, CONF_USER_KEY
+from .const import CONF_AI_API_KEY, CONF_DEVICE_ID, CONF_SECRET, CONF_USER_KEY
 
-TO_REDACT = {CONF_EMAIL, CONF_PASSWORD, CONF_SECRET, CONF_DEVICE_ID, CONF_USER_KEY}
+TO_REDACT = {
+    CONF_EMAIL,
+    CONF_PASSWORD,
+    CONF_SECRET,
+    CONF_DEVICE_ID,
+    CONF_USER_KEY,
+    CONF_AI_API_KEY,
+}
 
 
 async def async_get_config_entry_diagnostics(
@@ -20,7 +27,7 @@ async def async_get_config_entry_diagnostics(
     runtime = entry.runtime_data
     return {
         "data": async_redact_data(dict(entry.data), TO_REDACT),
-        "options": dict(entry.options),
+        "options": async_redact_data(dict(entry.options), TO_REDACT),
         "status": runtime.listener.status,
         "last_error": runtime.listener.last_error,
         "stop_reason": runtime.listener.stop_reason,
@@ -30,4 +37,7 @@ async def async_get_config_entry_diagnostics(
         "pending_emergencies": len(runtime.pending_receipts),
         "last_alert": runtime.last_alert,
         "last_spoken": runtime.last_spoken,
+        "ai_enabled": runtime.ai_enabled,
+        "ai_memory_lines": len(runtime.memory),
+        "last_ai_attempt": runtime.last_ai,
     }

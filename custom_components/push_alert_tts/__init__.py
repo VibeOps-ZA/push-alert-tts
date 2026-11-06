@@ -21,6 +21,7 @@ from homeassistant.core import (
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
+from .api import as_int
 from .const import DOMAIN, MAX_HISTORY_DAYS
 from .coordinator import AlertTTS
 
@@ -30,6 +31,7 @@ PLATFORMS = [
     Platform.NUMBER,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.TEXT,
 ]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -37,6 +39,9 @@ SERVICE_ACK = "acknowledge"
 SERVICE_SPEAK = "speak"
 SERVICE_HISTORY = "get_history"
 SERVICE_PREVIEW = "preview"
+SERVICE_ADD_MEMORY = "add_ai_memory"
+SERVICE_GET_MEMORY = "get_ai_memory"
+ADD_MEMORY_SCHEMA = vol.Schema({vol.Required("text"): cv.string})
 SPEAK_SCHEMA = vol.Schema({vol.Required("message"): cv.string})
 HISTORY_SCHEMA = vol.Schema(
     {
@@ -57,6 +62,7 @@ PREVIEW_SCHEMA = vol.Schema(
         vol.Optional("app"): cv.string,
         vol.Optional("priority"): vol.All(vol.Coerce(int), vol.Range(min=-2, max=2)),
         vol.Optional("speak", default=False): cv.boolean,
+        vol.Optional("use_ai", default=True): cv.boolean,
     }
 )
 
@@ -107,12 +113,24 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
                 translation_key="preview_nothing",
             )
         spoken = await runtime.compute_spoken([alert])
+        ai = None
+        if call.data["use_ai"]:
+            ai = await runtime.ai_wording(
+                [alert], spoken, as_int(alert.get("priority")) >= 2
+            )
+        text = ai["text"] if ai and ai["text"] else spoken["text"]
         if call.data["speak"]:
             runtime.entry.async_create_background_task(
-                hass, runtime.speak(spoken["text"]), f"{DOMAIN}_preview_speak"
+                hass, runtime.speak(text), f"{DOMAIN}_preview_speak"
             )
         return {
-            "spoken_text": spoken["text"],
+            "spoken_text": text,
+            "spoken_source": "ai" if ai and ai["text"] else "filter",
+            "filter_text": spoken["text"],
+            "ai_text": ai["text"] if ai else None,
+            "ai_answer": ai["answer"] if ai else None,
+            "ai_reason": ai["reason"] if ai else None,
+            "ai_seconds": ai["seconds"] if ai else None,
             "outcome": spoken["outcome"],
             "groups": spoken["groups"],
             "alert": {
@@ -124,6 +142,28 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             "spoken": bool(call.data["speak"]),
         }
 
+    async def _add_memory(call: ServiceCall) -> ServiceResponse:
+        runtime = _runtime(hass)
+        added = await runtime.async_add_memory(call.data["text"])
+        return {"added": added, "memory": list(runtime.memory)}
+
+    async def _get_memory(call: ServiceCall) -> ServiceResponse:
+        runtime = _runtime(hass)
+        return {"memory": list(runtime.memory), "path": runtime.memory_path}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADD_MEMORY,
+        _add_memory,
+        schema=ADD_MEMORY_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_MEMORY,
+        _get_memory,
+        supports_response=SupportsResponse.ONLY,
+    )
     hass.services.async_register(DOMAIN, SERVICE_ACK, _ack)
     hass.services.async_register(DOMAIN, SERVICE_SPEAK, _speak, schema=SPEAK_SCHEMA)
     hass.services.async_register(
@@ -165,11 +205,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: AlertTTSConfigEntry) ->
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: AlertTTSConfigEntry) -> None:
-    """Delete the saved alert history with the integration."""
+    """Delete the saved alert history and AI memory with the integration.
+
+    Earlier copies of the AI memory (ai_memory_versions) are kept on purpose.
+    """
     path = hass.config.path(DOMAIN, f"history_{entry.entry_id}.jsonl")
+    memory = hass.config.path(DOMAIN, f"ai_memory_{entry.entry_id}.txt")
 
     def _remove() -> None:
-        for name in (path, f"{path}.tmp"):
+        for name in (path, f"{path}.tmp", memory, f"{memory}.tmp"):
             if os.path.exists(name):
                 os.remove(name)
 

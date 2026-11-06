@@ -1,6 +1,6 @@
 """Spoken-text building."""
 
-from custom_components.push_alert_tts.text import (
+from custom_components.push_alert_tts.spoken import (
     build_text,
     clean,
     should_announce,

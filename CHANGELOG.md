@@ -5,6 +5,40 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-06
+
+### Added
+- **AI wording** (optional, off by default): a local LLM you run yourself
+  (Ollama, or any OpenAI-compatible server) words each alert as one short
+  sentence. The alert is sent exactly as received, with your instructions and
+  the AI memory. Settings in a new collapsible *AI wording* section: server
+  type, address, model, optional API key, time limit (default 60 s),
+  emergency time limit (default 5 s), maximum words, instructions and an
+  optional "answer must start with" pattern.
+- **Safe fallback**: the normal spoken text is always worked out first and is
+  spoken whenever the AI is off, unreachable, too slow, or answers with
+  nothing, too many words, symbols/links or the wrong shape. After a failed
+  connection the AI is skipped for a minute. Several queued alerts keep the
+  queued-alerts phrase.
+- **AI memory**: plain-language corrections sent with every alert. Add them
+  with the new **AI correction** text entity, the new
+  `push_alert_tts.add_ai_memory` action or the settings; read them with
+  `push_alert_tts.get_ai_memory`. Previous versions are kept (newest 20).
+- **AI review** sensor: the alerts of the last 3 days (up to 50) with the
+  alert as received and what was spoken (not saved in the recorder).
+- History lines now also hold the alert's link, original message length, the
+  normal text, the AI's answer and text, which was spoken and why, and step
+  timings (Pushover delay, text, AI, TTS call, playback start/end). The same
+  fields are attributes of the Last alert sensor.
+- `push_alert_tts.preview` also asks the AI (option `use_ai`) and returns both
+  texts.
+
+### Changed
+- History lines for announced alerts are written once the announcement has
+  finished, so they include its timings.
+- Internal: the spoken-text helpers moved from `text.py` to `spoken.py`
+  (`text.py` is now the text entity platform).
+
 ## [0.4.0] - 2026-10-16
 
 ### Added

@@ -12,12 +12,14 @@ from homeassistant.config_entries import (
     SOURCE_REAUTH,
     SOURCE_RECONFIGURE,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -36,6 +38,21 @@ from homeassistant.helpers.selector import (
 
 from . import api
 from .const import (
+    AI_API_OLLAMA,
+    AI_APIS,
+    AI_OPTION_KEYS,
+    CONF_AI_API,
+    CONF_AI_API_KEY,
+    CONF_AI_EMERGENCY_TIMEOUT,
+    CONF_AI_ENABLED,
+    CONF_AI_INSTRUCTIONS,
+    CONF_AI_MAX_WORDS,
+    CONF_AI_MEMORY,
+    CONF_AI_MODEL,
+    CONF_AI_SECTION,
+    CONF_AI_START_PATTERN,
+    CONF_AI_TIMEOUT,
+    CONF_AI_URL,
     CONF_APP_FILTER,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
@@ -64,6 +81,9 @@ from .const import (
     CONF_TTS_LANGUAGE,
     CONF_TWOFA,
     CONF_USER_KEY,
+    DEFAULT_AI_EMERGENCY_TIMEOUT,
+    DEFAULT_AI_MAX_WORDS,
+    DEFAULT_AI_TIMEOUT,
     DEFAULT_DEVICE_NAME,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_FIXED_MESSAGE,
@@ -76,6 +96,7 @@ from .const import (
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
     DOMAIN,
+    MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MESSAGE_MODES,
     MODE_FIXED,
@@ -84,7 +105,9 @@ from .const import (
     REGEX_SOURCES,
     SOURCE_MESSAGE_TITLE,
 )
-from .text import REGEX_FLAGS, unknown_placeholders
+from .llm import DEFAULT_INSTRUCTIONS
+from .memory import split_lines
+from .spoken import REGEX_FLAGS, unknown_placeholders
 
 _LOGGER = logging.getLogger(__name__)
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,25}$")
@@ -311,8 +334,25 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         current: dict[str, Any] = dict(self.config_entry.options)
+        runtime = (
+            self.config_entry.runtime_data
+            if self.config_entry.state is ConfigEntryState.LOADED
+            else None
+        )
+        memory_text = "\n".join(runtime.memory) if runtime else ""
         if user_input is not None:
-            current = user_input
+            previous = current
+            ai = user_input.pop(CONF_AI_SECTION, None)
+            if ai is None:  # section not sent: keep the AI settings as they are
+                ai = {k: previous[k] for k in AI_OPTION_KEYS if k in previous}
+            else:
+                ai = dict(ai)
+                memory_text = ai.pop(CONF_AI_MEMORY, None) or ""
+            current = {
+                **user_input,
+                **{k: v for k, v in ai.items() if k in AI_OPTION_KEYS},
+            }
+            errors.update(_check_ai(current))
             if current.get(CONF_MESSAGE_MODE) == MODE_REGEX:
                 if not current.get(CONF_REGEX):
                     errors[CONF_REGEX] = "regex_required"
@@ -331,6 +371,9 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
             if notify and not re.match(r"^notify\.[a-z0-9_]+$", notify):
                 errors[CONF_FALLBACK_NOTIFY] = "invalid_notify"
             if not errors:
+                lines = split_lines(memory_text)
+                if runtime is not None and lines != runtime.memory:
+                    await runtime.async_set_memory(lines)
                 return self.async_create_entry(data=current)
 
         notify_services = sorted(
@@ -490,6 +533,96 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                         mode=NumberSelectorMode.BOX,
                     )
                 ),
+                vol.Optional(CONF_AI_SECTION): section(
+                    _ai_schema(current, opt, memory_text),
+                    {"collapsed": not current.get(CONF_AI_ENABLED)},
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+
+def _check_ai(options: Mapping[str, Any]) -> dict[str, str]:
+    """Errors for the AI wording section (shown at the top of the form)."""
+    if options.get(CONF_AI_ENABLED):
+        url = str(options.get(CONF_AI_URL) or "").strip()
+        if not re.match(r"^https?://[^\s/]+", url):
+            return {"base": "ai_url_required"}
+        if not str(options.get(CONF_AI_MODEL) or "").strip():
+            return {"base": "ai_model_required"}
+    pattern = options.get(CONF_AI_START_PATTERN)
+    if pattern:
+        try:
+            re.compile(pattern)
+        except re.error:
+            return {"base": "ai_invalid_pattern"}
+    return {}
+
+
+def _seconds(minimum: int, maximum: int) -> NumberSelector:
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=minimum,
+            max=maximum,
+            step=1,
+            unit_of_measurement="s",
+            mode=NumberSelectorMode.BOX,
+        )
+    )
+
+
+def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Schema:
+    """The collapsible AI wording section."""
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_AI_ENABLED, default=bool(opt(CONF_AI_ENABLED, False))
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_AI_API, default=opt(CONF_AI_API, AI_API_OLLAMA)
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=AI_APIS,
+                    translation_key=CONF_AI_API,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_AI_URL,
+                description={"suggested_value": current.get(CONF_AI_URL)},
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            vol.Optional(
+                CONF_AI_MODEL,
+                description={"suggested_value": current.get(CONF_AI_MODEL)},
+            ): str,
+            vol.Optional(
+                CONF_AI_API_KEY,
+                description={"suggested_value": current.get(CONF_AI_API_KEY)},
+            ): PASSWORD,
+            vol.Optional(
+                CONF_AI_TIMEOUT, default=opt(CONF_AI_TIMEOUT, DEFAULT_AI_TIMEOUT)
+            ): _seconds(1, MAX_AI_TIMEOUT),
+            vol.Optional(
+                CONF_AI_EMERGENCY_TIMEOUT,
+                default=opt(CONF_AI_EMERGENCY_TIMEOUT, DEFAULT_AI_EMERGENCY_TIMEOUT),
+            ): _seconds(1, 60),
+            vol.Optional(
+                CONF_AI_MAX_WORDS, default=opt(CONF_AI_MAX_WORDS, DEFAULT_AI_MAX_WORDS)
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=5, max=200, step=1, mode=NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_AI_INSTRUCTIONS,
+                default=opt(CONF_AI_INSTRUCTIONS, DEFAULT_INSTRUCTIONS),
+            ): TextSelector(TextSelectorConfig(multiline=True)),
+            vol.Optional(
+                CONF_AI_START_PATTERN,
+                description={"suggested_value": current.get(CONF_AI_START_PATTERN)},
+            ): str,
+            vol.Optional(
+                CONF_AI_MEMORY, description={"suggested_value": memory_text}
+            ): TextSelector(TextSelectorConfig(multiline=True)),
+        }
+    )

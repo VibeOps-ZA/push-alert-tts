@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
@@ -30,6 +30,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_call_later,
@@ -40,9 +41,23 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import api
+from . import api, llm
 from .client import STATUS_LOGIN_REQUIRED, STATUS_STOPPED, PushoverListener
 from .const import (
+    AI_API_OLLAMA,
+    AI_OFFLINE_SKIP,
+    AI_REVIEW_DAYS,
+    AI_REVIEW_MAX,
+    CONF_AI_API,
+    CONF_AI_API_KEY,
+    CONF_AI_EMERGENCY_TIMEOUT,
+    CONF_AI_ENABLED,
+    CONF_AI_INSTRUCTIONS,
+    CONF_AI_MAX_WORDS,
+    CONF_AI_MODEL,
+    CONF_AI_START_PATTERN,
+    CONF_AI_TIMEOUT,
+    CONF_AI_URL,
     CONF_EMERGENCY_MESSAGE,
     CONF_FALLBACK_NOTIFY,
     CONF_HISTORY_DAYS,
@@ -53,6 +68,9 @@ from .const import (
     CONF_SPEAKERS,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
+    DEFAULT_AI_EMERGENCY_TIMEOUT,
+    DEFAULT_AI_MAX_WORDS,
+    DEFAULT_AI_TIMEOUT,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_OFFLINE_ALERT_DELAY,
@@ -63,6 +81,7 @@ from .const import (
     EVENT_ACK,
     EVENT_ALERT,
     ISSUE_STOPPED,
+    MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MAX_MESSAGE_INPUT,
     MAX_TITLE_INPUT,
@@ -74,14 +93,19 @@ from .const import (
     TEXT_TIMEOUT,
     WAKE_TIMEOUT,
 )
-from .text import (
+from .memory import read_memory, split_lines, write_memory
+from .spoken import (
     OUTCOME_ERROR,
+    OUTCOME_MULTIPLE,
     OUTCOME_TIMEOUT,
     build_spoken,
     build_text,
     clean,
     should_announce,
 )
+
+SOURCE_AI = "ai"
+SOURCE_FILTER = "filter"  # the normal (non-AI) spoken text
 
 _LOGGER = logging.getLogger(__name__)
 _BAD_STATES = (STATE_UNAVAILABLE, STATE_UNKNOWN, None)
@@ -102,10 +126,14 @@ def history_record(
     queued: bool,
     announced: bool,
     spoken_text: str | None,
+    extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One line of the history file (the raw alert, length-capped)."""
+    """One line of the history file (the raw alert, length-capped).
+
+    ``extra`` adds the AI fields and step timings for the announced alert.
+    """
     sent = api.as_int(msg.get("date"))
-    return {
+    row = {
         "received": received.isoformat(timespec="seconds"),
         "sent": (
             dt_util.utc_from_timestamp(sent).isoformat(timespec="seconds")
@@ -116,10 +144,42 @@ def history_record(
         "priority": api.as_int(msg.get("priority")),
         "title": str(msg.get("title") or "")[:MAX_TITLE_INPUT],
         "message": str(msg.get("message") or "")[:MAX_MESSAGE_INPUT],
+        "message_length": len(str(msg.get("message") or "")),
+        "url": msg.get("url") or None,
+        "url_title": msg.get("url_title") or None,
         "queued": queued,
         "announced": announced,
         "spoken_text": spoken_text,
     }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def review_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A history row as shown by the AI review sensor."""
+    return {
+        "received": row.get("received"),
+        "alert": llm.alert_text(row),
+        "spoken": row.get("spoken_text"),
+        "ai_text": row.get("ai_text"),
+        "source": row.get("spoken_source"),
+        "reason": row.get("ai_reason"),
+        "ai_seconds": row.get("ai_seconds"),
+    }
+
+
+def read_review(path: str, now: datetime) -> list[dict[str, Any]]:
+    """Recent rows the AI looked at (oldest first), for the review sensor."""
+    cutoff = now - timedelta(days=AI_REVIEW_DAYS)
+    rows = []
+    for row in _read_lines(path):
+        if "ai_reason" not in row and "ai_text" not in row:
+            continue
+        when = _parse_time(row.get("received"))
+        if when is not None and when >= cutoff:
+            rows.append(review_row(row))
+    return rows[-AI_REVIEW_MAX:]
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -196,6 +256,22 @@ def read_history(
     return out
 
 
+def _ms_since(start: float) -> int:
+    return int((time.monotonic() - start) * 1000)
+
+
+class _Marks:
+    """Records step times (ms since t0) into a timings dict, if there is one."""
+
+    def __init__(self, timings: dict[str, Any] | None, t0: float | None) -> None:
+        self.timings = timings
+        self.t0 = t0
+
+    def __call__(self, key: str) -> None:
+        if self.timings is not None and self.t0 is not None:
+            self.timings[key] = _ms_since(self.t0)
+
+
 class AlertTTS:
     """Everything one Push Alert TTS config entry needs at runtime."""
 
@@ -232,6 +308,14 @@ class AlertTTS:
         self._alert_lock = asyncio.Lock()
         self._history_lock = asyncio.Lock()
         self.history_path = hass.config.path(DOMAIN, f"history_{entry.entry_id}.jsonl")
+        # AI wording.
+        self.memory_path = hass.config.path(DOMAIN, f"ai_memory_{entry.entry_id}.txt")
+        self.memory_versions_dir = hass.config.path(DOMAIN, "ai_memory_versions")
+        self.memory: list[str] = []
+        self._memory_lock = asyncio.Lock()
+        self._ai_offline_until = 0.0  # monotonic; skip the LLM until then
+        self.last_ai: dict[str, Any] | None = None  # last AI attempt
+        self.review: deque[dict[str, Any]] = deque(maxlen=AI_REVIEW_MAX)
 
     # -- options (read live, so changes apply without a reload) ----------------
     @property
@@ -248,6 +332,18 @@ class AlertTTS:
         return max(0, min(days, MAX_HISTORY_DAYS))
 
     @property
+    def ai_enabled(self) -> bool:
+        return bool(
+            self.options.get(CONF_AI_ENABLED)
+            and self.options.get(CONF_AI_URL)
+            and self.options.get(CONF_AI_MODEL)
+        )
+
+    def _ai_number(self, key: str, default: int, maximum: int) -> int:
+        value = api.as_int(self.options.get(key, default)) or default
+        return max(1, min(value, maximum))
+
+    @property
     def pending_receipts(self) -> list[str]:
         now = time.time()
         return [r for r, expiry in self._receipts.items() if expiry > now]
@@ -259,6 +355,17 @@ class AlertTTS:
         self._receipts = {
             r: e for r, e in (data.get("receipts") or {}).items() if e > now
         }
+        try:
+            self.memory = await self.hass.async_add_executor_job(
+                read_memory, self.memory_path
+            )
+            self.review.extend(
+                await self.hass.async_add_executor_job(
+                    read_review, self.history_path, dt_util.utcnow()
+                )
+            )
+        except OSError as err:
+            _LOGGER.warning("Could not read the AI memory or history: %s", err)
 
     @callback
     def async_start(self) -> None:
@@ -467,6 +574,7 @@ class AlertTTS:
                 )
 
     def _handle_alerts(self, messages: list[dict], queued: bool) -> None:
+        received = (dt_util.utcnow(), time.monotonic())
         acked_any = False
         fresh: list[dict] = []
         for m in messages:
@@ -506,16 +614,23 @@ class AlertTTS:
         # and the listener can delete the messages promptly and keep receiving.
         self.entry.async_create_background_task(
             self.hass,
-            self._process(fresh, wanted, queued, self.enabled),
+            self._process(fresh, wanted, queued, self.enabled, received),
             f"{DOMAIN}_process",
         )
 
     async def _process(
-        self, fresh: list[dict], wanted: list[dict], queued: bool, enabled: bool
+        self,
+        fresh: list[dict],
+        wanted: list[dict],
+        queued: bool,
+        enabled: bool,
+        received: tuple[datetime, float] | None = None,
     ) -> None:
+        if received is None:
+            received = (dt_util.utcnow(), time.monotonic())
         async with self._alert_lock:
             try:
-                await self._process_locked(fresh, wanted, queued, enabled)
+                await self._process_locked(fresh, wanted, queued, enabled, received)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Failed to process Pushover alerts")
                 if enabled and wanted:
@@ -524,14 +639,30 @@ class AlertTTS:
                     )
 
     async def _process_locked(
-        self, fresh: list[dict], wanted: list[dict], queued: bool, enabled: bool
+        self,
+        fresh: list[dict],
+        wanted: list[dict],
+        queued: bool,
+        enabled: bool,
+        received: tuple[datetime, float],
     ) -> None:
+        received_at, t0 = received
         last = fresh[-1]
         top = max(api.as_int(m.get("priority")) for m in fresh)
+        timings: dict[str, Any] = {}
+        if sent := api.as_int(last.get("date")):
+            timings["pushover_delay_s"] = round(received_at.timestamp() - sent, 1)
         spoken = await self.compute_spoken(wanted) if wanted else None
-        text = spoken["text"] if spoken else None
+        filter_text = spoken["text"] if spoken else None
+        timings["text_ms"] = _ms_since(t0)
+        emergency = any(api.as_int(m.get("priority")) >= 2 for m in wanted)
+        ai = await self.ai_wording(wanted, spoken, emergency) if wanted else None
+        if ai is not None:
+            timings["ai_done_ms"] = _ms_since(t0)
+        use_ai = bool(ai and ai["text"])
+        text = ai["text"] if use_ai else filter_text
+        source = SOURCE_AI if use_ai else (SOURCE_FILTER if wanted else None)
         announce = bool(wanted) and enabled
-        received = dt_util.utcnow()
 
         self._last_raw = {
             k: last.get(k) for k in ("title", "message", "app", "priority")
@@ -546,8 +677,14 @@ class AlertTTS:
             "announced": announce,
             "spoken_text": text if announce else None,
             "spoken_outcome": spoken["outcome"] if spoken else None,
+            "spoken_source": source,
+            "filter_text": filter_text,
+            "ai_text": ai["text"] if ai else None,
+            "ai_reason": ai["reason"] if ai else None,
+            "ai_seconds": ai["seconds"] if ai else None,
+            "timings": timings,
         }
-        self.last_alert_time = received
+        self.last_alert_time = received_at
         self.hass.bus.async_fire(
             EVENT_ALERT,
             {
@@ -560,30 +697,159 @@ class AlertTTS:
                 "app": self.last_alert["app"],
                 "announced": announce,
                 "spoken_text": text,
+                "spoken_source": source,
                 "messages": [{k: m.get(k) for k in MESSAGE_FIELDS} for m in fresh],
             },
         )
         self.update_entities()
 
-        if announce:
-            emergency = any(api.as_int(m.get("priority")) >= 2 for m in wanted)
-            self.entry.async_create_background_task(
-                self.hass, self._announce(text, emergency), f"{DOMAIN}_announce"
+        wanted_ids = {id(m) for m in wanted}
+        extra: dict[str, Any] = {
+            "spoken_source": source,
+            "filter_text": filter_text,
+            "timings": timings,  # shared: the announcement adds its steps
+        }
+        if ai is not None:
+            extra.update(
+                ai_text=ai["text"],
+                ai_answer=ai["answer"],
+                ai_reason=ai["reason"],
+                ai_seconds=ai["seconds"],
             )
+        rows = [
+            history_record(
+                m,
+                received_at,
+                queued=queued,
+                announced=announce and id(m) in wanted_ids,
+                spoken_text=text if id(m) in wanted_ids else None,
+                extra=extra if id(m) in wanted_ids else None,
+            )
+            for m in fresh
+        ]
+        if announce:
+            self.entry.async_create_background_task(
+                self.hass,
+                self._announce_and_record(text, emergency, rows, timings, t0),
+                f"{DOMAIN}_announce",
+            )
+        else:
+            await self._record(rows)
 
+    async def _announce_and_record(
+        self,
+        text: str | None,
+        emergency: bool,
+        rows: list[dict[str, Any]],
+        timings: dict[str, Any],
+        t0: float,
+    ) -> None:
+        """Announce, then save the history with the announcement's timings."""
+        try:
+            await self._announce(text, emergency, timings, t0)
+        finally:
+            await self._record(rows)
+            self.update_entities()
+
+    async def _record(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            if "ai_reason" in row:
+                self.review.append(review_row(row))
         if self.history_days:
-            wanted_ids = {id(m) for m in wanted}
-            rows = [
-                history_record(
-                    m,
-                    received,
-                    queued=queued,
-                    announced=announce and id(m) in wanted_ids,
-                    spoken_text=text if id(m) in wanted_ids else None,
-                )
-                for m in fresh
-            ]
             await self._write_history(rows)
+
+    # -- AI wording --------------------------------------------------------------
+    async def ai_wording(
+        self,
+        alerts: list[Mapping[str, Any]],
+        spoken: Mapping[str, Any] | None,
+        emergency: bool,
+    ) -> dict[str, Any] | None:
+        """Ask the LLM to word the alert. None when AI wording is off.
+
+        Never raises. ``text`` is None when the normal text must be used, and
+        ``reason`` then says why.
+        """
+        if not self.ai_enabled:
+            return None
+        started = time.monotonic()
+        result: dict[str, Any] = {
+            "text": None,
+            "answer": None,
+            "reason": None,
+            "seconds": None,
+        }
+        if len(alerts) != 1 or (spoken and spoken.get("outcome") == OUTCOME_MULTIPLE):
+            result["reason"] = llm.REASON_MULTIPLE
+        elif started < self._ai_offline_until:
+            result["reason"] = llm.REASON_OFFLINE_RECENT
+        else:
+            opts = self.options
+            max_words = self._ai_number(CONF_AI_MAX_WORDS, DEFAULT_AI_MAX_WORDS, 200)
+            timeout = (
+                self._ai_number(
+                    CONF_AI_EMERGENCY_TIMEOUT, DEFAULT_AI_EMERGENCY_TIMEOUT, 60
+                )
+                if emergency
+                else self._ai_number(
+                    CONF_AI_TIMEOUT, DEFAULT_AI_TIMEOUT, MAX_AI_TIMEOUT
+                )
+            )
+            try:
+                answer = await llm.ask(
+                    async_get_clientsession(self.hass),
+                    api=opts.get(CONF_AI_API) or AI_API_OLLAMA,
+                    url=str(opts.get(CONF_AI_URL)),
+                    model=str(opts.get(CONF_AI_MODEL)),
+                    system=llm.system_prompt(
+                        opts.get(CONF_AI_INSTRUCTIONS), self.memory, max_words
+                    ),
+                    user=llm.alert_text(alerts[0]),
+                    timeout=timeout,
+                    api_key=opts.get(CONF_AI_API_KEY) or None,
+                    max_tokens=max(60, max_words * 4),
+                )
+                result["answer"] = answer
+                result["text"], result["reason"] = llm.check_answer(
+                    answer, max_words, opts.get(CONF_AI_START_PATTERN) or None
+                )
+            except llm.AIError as err:
+                result["reason"] = err.reason
+                if err.reason == llm.REASON_OFFLINE:
+                    self._ai_offline_until = time.monotonic() + AI_OFFLINE_SKIP
+                _LOGGER.info(
+                    "AI wording not used (%s): %s; speaking the normal text",
+                    err.reason,
+                    err.detail,
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("AI wording failed; speaking the normal text")
+                result["reason"] = llm.REASON_ERROR
+        result["seconds"] = round(time.monotonic() - started, 2)
+        self.last_ai = {
+            **result,
+            "time": dt_util.utcnow().isoformat(timespec="seconds"),
+        }
+        return result
+
+    async def async_set_memory(self, lines: list[str]) -> None:
+        async with self._memory_lock:
+            await self.hass.async_add_executor_job(
+                write_memory,
+                self.memory_path,
+                lines,
+                self.memory_versions_dir,
+                dt_util.utcnow(),
+            )
+            self.memory = list(lines)
+        self.update_entities()
+
+    async def async_add_memory(self, text: str) -> list[str]:
+        """Add plain-language correction(s), exactly as written."""
+        new = split_lines(text)
+        if new:
+            await self.async_set_memory([*self.memory, *new])
+        return new
 
     async def compute_spoken(self, alerts: list[Mapping[str, Any]]) -> dict[str, Any]:
         """build_spoken() with a time limit, so a runaway regex can't hang us."""
@@ -650,12 +916,18 @@ class AlertTTS:
             return {k: rows[0].get(k) for k in ("title", "message", "app", "priority")}
         return None
 
-    async def _announce(self, text: str | None, emergency: bool) -> None:
+    async def _announce(
+        self,
+        text: str | None,
+        emergency: bool,
+        timings: dict[str, Any] | None = None,
+        t0: float | None = None,
+    ) -> None:
         # Right after start-up, give speakers a moment to load.
         settle_until = self._started_at + SPEAKER_SETTLE
         while time.monotonic() < settle_until and not self._speakers_ready():
             await asyncio.sleep(1)
-        await self.speak(text or self._fixed_phrase())
+        await self.speak(text or self._fixed_phrase(), timings=timings, t0=t0)
         if emergency and self.repeat_until_ack and self.pending_receipts:
             self._stop_repeats()
             self._ack_event.clear()
@@ -719,13 +991,27 @@ class AlertTTS:
             )
 
     # -- speaking ----------------------------------------------------------------
-    async def speak(self, text: str, notify_on_failure: bool = True) -> None:
-        """Say `text` on every selected speaker at the configured volume."""
+    async def speak(
+        self,
+        text: str,
+        notify_on_failure: bool = True,
+        timings: dict[str, Any] | None = None,
+        t0: float | None = None,
+    ) -> None:
+        """Say `text` on every selected speaker at the configured volume.
+
+        ``timings`` (if given) gets each step's time in ms since ``t0``.
+        """
+        mark = _Marks(timings, t0)
         async with self._speak_lock:
-            await self._speak(text, notify_on_failure)
+            mark("speak_start_ms")
+            await self._speak(text, notify_on_failure, mark)
             self.update_entities()
 
-    async def _speak(self, text: str, notify_on_failure: bool) -> None:
+    async def _speak(
+        self, text: str, notify_on_failure: bool, mark: _Marks | None = None
+    ) -> None:
+        mark = mark or _Marks(None, None)
         ready, down = [], []
         for entity_id in self.speakers:
             state = self.hass.states.get(entity_id)
@@ -774,6 +1060,7 @@ class AlertTTS:
             if language := self.options.get(CONF_TTS_LANGUAGE):
                 data["language"] = language
             started = time.monotonic()
+            mark("tts_call_ms")
             async with asyncio.timeout(TTS_TIMEOUT):
                 await self.hass.services.async_call(
                     "tts",
@@ -782,8 +1069,9 @@ class AlertTTS:
                     target={ATTR_ENTITY_ID: tts_entity},
                     blocking=True,
                 )
+            mark("tts_done_ms")
             self.last_spoken = text
-            await self._wait_for_playback(ready, before, text, started)
+            await self._wait_for_playback(ready, before, text, started, mark)
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Announcement failed: %s", err)
             if notify_on_failure:
@@ -837,8 +1125,10 @@ class AlertTTS:
         before: Mapping[str, Any],
         text: str,
         started: float,
+        mark: _Marks | None = None,
     ) -> None:
         """Wait until our announcement has started and then finished."""
+        mark = mark or _Marks(None, None)
 
         def ours_playing() -> bool:
             for s in speakers:
@@ -857,10 +1147,14 @@ class AlertTTS:
         deadline = loop.time() + PLAYBACK_START_TIMEOUT
         while not ours_playing() and loop.time() < deadline:
             await asyncio.sleep(0.25)
+        if not ours_playing():
+            return  # never saw it play (or a speaker that doesn't report it)
+        mark("playback_start_ms")
         # ~15 characters per second of speech, plus margin.
         deadline = loop.time() + max(PLAYBACK_END_TIMEOUT, len(text) / 12 + 20)
         while ours_playing() and loop.time() < deadline:
             await asyncio.sleep(0.25)
+        mark("playback_end_ms")
 
     # -- fallback notification ---------------------------------------------------
     async def _notify_fallback(self, message: str) -> None:

@@ -107,6 +107,38 @@
           "expand_abbreviations": "Speaks common IT shorthand in full, e.g. prod as production, db as database, lb01 as load balancer 01. Whole words only. The full list is in the README.",
           "remove_repeated_words": "Spoken template only. Leaves out words an earlier part of the sentence already said, so names repeated in an alert are only spoken once.",
           "history_days": "Days. Saves every received alert to a small file in your config folder so you can look back with the get_history action. 0 = off (and deletes the saved history)."
+        },
+        "sections": {
+          "ai_wording": {
+            "name": "AI wording (optional, local LLM)",
+            "description": "Let a language model you run yourself (for example Ollama on a PC) word each alert as one short sentence. If it is off, slow, unreachable or answers badly, the normal text above is spoken instead, so no alert is lost. See the README for setup.",
+            "data": {
+              "ai_enabled": "Use AI wording",
+              "ai_api": "Server type",
+              "ai_url": "LLM server address",
+              "ai_model": "Model",
+              "ai_api_key": "API key (optional)",
+              "ai_timeout": "Wait for the AI at most",
+              "ai_emergency_timeout": "Wait at most (emergency alerts)",
+              "ai_max_words": "Maximum words",
+              "ai_instructions": "Instructions for the AI",
+              "ai_start_pattern": "AI answer must start with (optional regex)",
+              "ai_memory": "AI memory (corrections, one per line)"
+            },
+            "data_description": {
+              "ai_enabled": "Off = alerts are spoken exactly as before.",
+              "ai_api": "Ollama, or any server with an OpenAI-compatible chat API (LM Studio, llama.cpp, vLLM, LocalAI, OpenAI).",
+              "ai_url": "For example http://192.168.1.50:11434 for Ollama, or http://192.168.1.50:1234/v1 for LM Studio.",
+              "ai_model": "The model name exactly as the server lists it, e.g. qwen3.5:9b.",
+              "ai_api_key": "Only if your server needs one. Saved in Home Assistant's storage.",
+              "ai_timeout": "Seconds. If there is no usable answer in this time the normal text is spoken. If the server could not be reached, the AI is skipped for the next minute so alerts are not held up.",
+              "ai_emergency_timeout": "Seconds. Emergency (priority 2) alerts wait at most this long, so they are always announced promptly.",
+              "ai_max_words": "Answers much longer than this (more than about one and a half times) are not used.",
+              "ai_instructions": "What the AI is told before each alert. {max_words} is replaced by the number above. Leave as is if unsure.",
+              "ai_start_pattern": "A regular expression the answer must match at its start, e.g. ^(P\\d alert|Alert) at . Other answers are not used. Empty = any speakable answer.",
+              "ai_memory": "Plain-language corrections sent with every alert, e.g. Say HAProxy as HA proxy. You can also add lines with the AI correction box or the add_ai_memory action. Earlier versions are kept in the config folder."
+            }
+          }
         }
       }
     },
@@ -115,7 +147,10 @@
       "invalid_regex": "That regular expression isn't valid.",
       "invalid_notify": "Use the form notify.your_service_name, for example notify.mobile_app_your_phone.",
       "unknown_placeholder": "The template uses a name that your regex does not capture and is not built in. Check the spelling, or add a named group to the regex.",
-      "template_without_regex": "A spoken template only works when 'What to say' is set to the regex option."
+      "template_without_regex": "A spoken template only works when 'What to say' is set to the regex option.",
+      "ai_url_required": "AI wording is on: enter the LLM server address, starting with http:// or https://.",
+      "ai_model_required": "AI wording is on: enter the model name.",
+      "ai_invalid_pattern": "The 'AI answer must start with' pattern isn't a valid regular expression."
     }
   },
   "selector": {
@@ -133,6 +168,12 @@
         "title_message": "Title, then message",
         "title": "Title only",
         "message": "Message only"
+      }
+    },
+    "ai_api": {
+      "options": {
+        "ollama": "Ollama",
+        "openai": "OpenAI-compatible"
       }
     }
   },
@@ -166,6 +207,14 @@
     "sensor": {
       "last_alert": {
         "name": "Last alert"
+      },
+      "ai_review": {
+        "name": "AI review"
+      }
+    },
+    "text": {
+      "ai_correction": {
+        "name": "AI correction"
       }
     }
   },
@@ -239,8 +288,26 @@
         "speak": {
           "name": "Speak it",
           "description": "Also say the result on the configured speakers."
+        },
+        "use_ai": {
+          "name": "Use AI wording",
+          "description": "Also ask the AI (if AI wording is on). Off = only the normal text."
         }
       }
+    },
+    "add_ai_memory": {
+      "name": "Add AI memory",
+      "description": "Add a plain-language correction to the AI memory. It is sent to the AI with every alert from now on.",
+      "fields": {
+        "text": {
+          "name": "Correction",
+          "description": "For example: Say HAProxy as HA proxy. Several lines add several corrections."
+        }
+      }
+    },
+    "get_ai_memory": {
+      "name": "Get AI memory",
+      "description": "Return the AI memory (one correction per line)."
     }
   },
   "exceptions": {
