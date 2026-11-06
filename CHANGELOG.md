@@ -5,6 +5,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Import order sorted after the 0.5.4 rename (lint only; no behaviour change).
+
 ## [0.5.4] - 2026-11-06
 
 ### Fixed

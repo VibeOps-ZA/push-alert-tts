@@ -37,6 +37,7 @@ from homeassistant.helpers.selector import (
 )
 
 from . import api
+from .ai_wording import DEFAULT_INSTRUCTIONS, keep_alive_value
 from .const import (
     AI_API_OLLAMA,
     AI_APIS,
@@ -110,7 +111,6 @@ from .const import (
     REGEX_SOURCES,
     SOURCE_MESSAGE_TITLE,
 )
-from .ai_wording import DEFAULT_INSTRUCTIONS, keep_alive_value
 from .memory import split_lines
 from .spoken import REGEX_FLAGS, unknown_placeholders
 
