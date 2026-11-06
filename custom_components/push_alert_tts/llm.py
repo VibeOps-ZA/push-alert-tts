@@ -109,6 +109,19 @@ def check_answer(
     return text, None
 
 
+_KEEP_ALIVE_RE = re.compile(r"^(-?\d+|(\d+(\.\d+)?(ms|s|m|h))+)$")
+
+
+def keep_alive_value(text: Any) -> str | int | None:
+    """Ollama keep_alive from the setting: None (server default), int or duration."""
+    value = str(text or "").strip()
+    if not value:
+        return None
+    if not _KEEP_ALIVE_RE.match(value):
+        raise ValueError(value)
+    return int(value) if re.match(r"^-?\d+$", value) else value
+
+
 def endpoint(api: str, url: str) -> str:
     base = url.strip().rstrip("/")
     if api == AI_API_OPENAI:
@@ -133,6 +146,8 @@ async def ask(
     timeout: float,
     api_key: str | None = None,
     max_tokens: int = 120,
+    context_size: int | None = None,
+    keep_alive: str | int | None = None,
 ) -> str:
     """Send one chat request; return the raw answer text or raise AIError."""
     target = endpoint(api, url)
@@ -159,6 +174,12 @@ async def ask(
             "think": False,  # thinking models answer far faster without it
             "options": {"temperature": 0, "num_predict": max_tokens},
         }
+        # Match the settings other programs load the model with, so Ollama
+        # does not reload it (slow) every time the caller changes.
+        if context_size:
+            body["options"]["num_ctx"] = int(context_size)
+        if keep_alive is not None and keep_alive != "":
+            body["keep_alive"] = keep_alive
     client_timeout = aiohttp.ClientTimeout(
         total=timeout, sock_connect=min(AI_CONNECT_TIMEOUT, timeout)
     )

@@ -43,9 +43,11 @@ from .const import (
     AI_OPTION_KEYS,
     CONF_AI_API,
     CONF_AI_API_KEY,
+    CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
     CONF_AI_INSTRUCTIONS,
+    CONF_AI_KEEP_ALIVE,
     CONF_AI_MAX_WORDS,
     CONF_AI_MEMORY,
     CONF_AI_MODEL,
@@ -96,6 +98,7 @@ from .const import (
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
     DOMAIN,
+    MAX_AI_CONTEXT,
     MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MESSAGE_MODES,
@@ -105,7 +108,7 @@ from .const import (
     REGEX_SOURCES,
     SOURCE_MESSAGE_TITLE,
 )
-from .llm import DEFAULT_INSTRUCTIONS
+from .llm import DEFAULT_INSTRUCTIONS, keep_alive_value
 from .memory import split_lines
 from .spoken import REGEX_FLAGS, unknown_placeholders
 
@@ -550,6 +553,10 @@ def _check_ai(options: Mapping[str, Any]) -> dict[str, str]:
             return {"base": "ai_url_required"}
         if not str(options.get(CONF_AI_MODEL) or "").strip():
             return {"base": "ai_model_required"}
+    try:
+        keep_alive_value(options.get(CONF_AI_KEEP_ALIVE))
+    except ValueError:
+        return {"base": "ai_invalid_keep_alive"}
     pattern = options.get(CONF_AI_START_PATTERN)
     if pattern:
         try:
@@ -613,6 +620,17 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
                     min=5, max=200, step=1, mode=NumberSelectorMode.BOX
                 )
             ),
+            vol.Optional(
+                CONF_AI_CONTEXT, default=opt(CONF_AI_CONTEXT, 0)
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0, max=MAX_AI_CONTEXT, step=1, mode=NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_AI_KEEP_ALIVE,
+                description={"suggested_value": current.get(CONF_AI_KEEP_ALIVE)},
+            ): str,
             vol.Optional(
                 CONF_AI_INSTRUCTIONS,
                 default=opt(CONF_AI_INSTRUCTIONS, DEFAULT_INSTRUCTIONS),

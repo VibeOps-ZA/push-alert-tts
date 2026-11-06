@@ -229,6 +229,7 @@ async def test_ai_text_is_spoken_and_recorded(
     )
     _method, _url, body, _headers = aioclient_mock.mock_calls[0]
     assert body["model"] == "test-model" and body["think"] is False
+    assert "num_ctx" not in body["options"] and "keep_alive" not in body  # defaults
     assert body["messages"][1]["content"] == _msg(1)["message"]  # raw, untouched
     assert "- Say HAProxy as HA proxy" in body["messages"][0]["content"]
 
@@ -411,7 +412,74 @@ async def test_options_ai_section(hass: HomeAssistant, mock_entry, no_listener) 
     ]
     assert runtime.ai_enabled
 
+    # Bad keep-alive is refused.
+    flow = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"],
+        {
+            **base,
+            "ai_wording": {
+                "ai_enabled": True,
+                "ai_url": OLLAMA,
+                "ai_model": "m",
+                "ai_keep_alive": "ten minutes",
+            },
+        },
+    )
+    assert result["errors"] == {"base": "ai_invalid_keep_alive"}
+
     # Saving without the section keeps the AI settings.
     flow = await hass.config_entries.options.async_init(mock_entry.entry_id)
     result = await hass.config_entries.options.async_configure(flow["flow_id"], base)
     assert mock_entry.options["ai_url"] == OLLAMA
+
+
+def test_keep_alive_value():
+    from custom_components.push_alert_tts.llm import keep_alive_value
+
+    assert keep_alive_value("") is None
+    assert keep_alive_value(None) is None
+    assert keep_alive_value(" -1 ") == -1
+    assert keep_alive_value("3600") == 3600
+    assert keep_alive_value("10m") == "10m"
+    assert keep_alive_value("1h30m") == "1h30m"
+    for bad in ("ten minutes", "5x", "-"):
+        with pytest.raises(ValueError):
+            keep_alive_value(bad)
+
+
+async def test_ollama_model_settings_are_sent(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme. Disk full."))
+    runtime = await _setup(
+        hass, mock_entry, **AI, ai_context_size=16384, ai_keep_alive="-1"
+    )
+    runtime.enabled = True
+
+    await _alert(hass, runtime, _msg(1))
+
+    _method, _url, body, _headers = aioclient_mock.mock_calls[0]
+    assert body["options"]["num_ctx"] == 16384
+    assert body["keep_alive"] == -1
+    assert _history(runtime)[-1]["spoken_source"] == "ai"
+
+
+async def test_invalid_stored_keep_alive_is_ignored(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme. Disk full."))
+    runtime = await _setup(hass, mock_entry, **AI, ai_keep_alive="soon")
+    runtime.enabled = True
+
+    await _alert(hass, runtime, _msg(1))
+
+    _method, _url, body, _headers = aioclient_mock.mock_calls[0]
+    assert "keep_alive" not in body  # bad value: server default, alert still worded
+    assert _history(runtime)[-1]["spoken_source"] == "ai"

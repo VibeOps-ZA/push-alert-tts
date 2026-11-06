@@ -949,6 +949,8 @@ It is **off by default**.
 | **Wait for the AI at most** | Seconds (default 60). The longest an alert waits for the AI before the normal text is spoken. A long limit gives a busy or just-woken PC the best chance; it only matters when the PC is on but slow, because an unreachable server is noticed within about 5 seconds. |
 | **Wait at most (emergency alerts)** | Seconds (default 5) for priority 2 alerts. |
 | **Maximum words** | Goal length (default 20). It is given to the AI as `{max_words}` in the instructions, and answers longer than about one and a half times this are not used. |
+| **Context size** *(Ollama, optional)* | The context size (`num_ctx`, in tokens) the model is loaded with. 0 = the server's default. Ollama reloads a model (15-20 seconds on a typical PC) whenever a request asks for a different context size than the loaded copy. If another program on your network uses the same model, set this to the value it uses so alerts don't trigger a reload. See Ollama's [FAQ on context size](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-can-i-specify-the-context-window-size). |
+| **Keep the model loaded for** *(Ollama, optional)* | How long the model stays in memory after an alert: a duration such as `10m` or `1h`, a number of seconds, or `-1` for always. Empty = the server's default (5 minutes unless changed). Each request resets the timer, so match the value other programs use. See Ollama's [FAQ on keeping a model loaded](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-do-i-keep-a-model-loaded-in-memory-or-make-it-unload-immediately). |
 | **Instructions for the AI** | What the AI is told before each alert. The default asks for a short spoken summary and no symbols. Edit it to get a fixed shape, e.g. *Reply with exactly this shape: &lt;level&gt; alert at &lt;customer&gt; on &lt;server&gt;. &lt;reason&gt;.* |
 | **AI answer must start with** *(optional)* | A [regular expression](https://docs.python.org/3/library/re.html#regular-expression-syntax) the answer must match at its start, e.g. `^(P\d alert|Alert) at ` for the shape above. Answers that don't match are not used. Empty = any speakable answer. |
 | **AI memory** | Plain-language corrections, one per line, sent with **every** alert (see below). |
@@ -1039,6 +1041,7 @@ for a minute after a failed connection), `llm_timeout`, `llm_http_error`,
 |---|---|
 | Always the normal text, reason `llm_unreachable` | The address and port, `OLLAMA_HOST` on the PC, the PC's firewall, and that the PC is awake. Open `http://<pc address>:11434/api/version` from another device. |
 | Reason `llm_timeout` | The model is too big or the PC is busy (games use the graphics card). Try a smaller model or a longer time limit. The first answer after the model loads is slower. |
+| The first alert after another program used the model is slow (15-20 s) | Ollama is reloading the model because the context size differs. Set **Context size** (and **Keep the model loaded for**) to what the other program uses. |
 | Reason `llm_http_error` | Usually a wrong model name. Check `ollama list`. |
 | Reason `llm_wrong_shape` / `llm_symbols` / `llm_too_long` | Make the instructions stricter, add a memory line, or relax *AI answer must start with* / *Maximum words*. |
 | Wrong names or words | Add a correction to the AI memory. |

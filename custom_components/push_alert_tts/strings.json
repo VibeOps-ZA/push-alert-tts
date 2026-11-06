@@ -121,6 +121,8 @@
               "ai_timeout": "Wait for the AI at most",
               "ai_emergency_timeout": "Wait at most (emergency alerts)",
               "ai_max_words": "Maximum words",
+              "ai_context_size": "Context size (Ollama, optional)",
+              "ai_keep_alive": "Keep the model loaded for (Ollama, optional)",
               "ai_instructions": "Instructions for the AI",
               "ai_start_pattern": "AI answer must start with (optional regex)",
               "ai_memory": "AI memory (corrections, one per line)"
@@ -134,6 +136,8 @@
               "ai_timeout": "Seconds. If there is no usable answer in this time the normal text is spoken. If the server could not be reached, the AI is skipped for the next minute so alerts are not held up.",
               "ai_emergency_timeout": "Seconds. Emergency (priority 2) alerts wait at most this long, so they are always announced promptly.",
               "ai_max_words": "Answers much longer than this (more than about one and a half times) are not used.",
+              "ai_context_size": "Ollama only. The num_ctx the model is loaded with, in tokens. 0 = the server's default. If other programs use the same model with a different context size, Ollama reloads the model each time the caller changes, which can add 15-20 seconds. Set this to the same value they use to avoid that.",
+              "ai_keep_alive": "Ollama only. How long the model stays in memory after an alert, e.g. 10m, 1h, or -1 for always. Empty = the server's default (5 minutes unless changed). Set this to match other programs so an alert does not shorten their setting.",
               "ai_instructions": "What the AI is told before each alert. {max_words} is replaced by the number above. Leave as is if unsure.",
               "ai_start_pattern": "A regular expression the answer must match at its start, e.g. ^(P\\d alert|Alert) at . Other answers are not used. Empty = any speakable answer.",
               "ai_memory": "Plain-language corrections sent with every alert, e.g. Say HAProxy as HA proxy. You can also add lines with the AI correction box or the add_ai_memory action. Earlier versions are kept in the config folder."
@@ -150,7 +154,8 @@
       "template_without_regex": "A spoken template only works when 'What to say' is set to the regex option.",
       "ai_url_required": "AI wording is on: enter the LLM server address, starting with http:// or https://.",
       "ai_model_required": "AI wording is on: enter the model name.",
-      "ai_invalid_pattern": "The 'AI answer must start with' pattern isn't a valid regular expression."
+      "ai_invalid_pattern": "The 'AI answer must start with' pattern isn't a valid regular expression.",
+      "ai_invalid_keep_alive": "'Keep the model loaded for' must be empty, a whole number of seconds (-1 = always), or a duration such as 30s, 10m or 1h."
     }
   },
   "selector": {

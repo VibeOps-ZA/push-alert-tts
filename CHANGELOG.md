@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-06
+
+### Added
+- AI wording, Ollama only: optional **Context size** (`num_ctx`) and **Keep
+  the model loaded for** (`keep_alive`) settings. Matching what other programs
+  use for the same model stops Ollama reloading it (15-20 s) before an alert.
+  Empty / 0 = the server's defaults, as before.
+
+### Changed
+- README and tests use a generic example name for the abbreviations example.
+
 ## [0.5.0] - 2026-11-06
 
 ### Added

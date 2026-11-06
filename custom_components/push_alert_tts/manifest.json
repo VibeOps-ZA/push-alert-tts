@@ -5,7 +5,9 @@
     "tts",
     "media_player"
   ],
-  "codeowners": ["@VibeOps-ZA"],
+  "codeowners": [
+    "@VibeOps-ZA"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/VibeOps-ZA/push-alert-tts",
@@ -13,5 +15,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/VibeOps-ZA/push-alert-tts/issues",
   "requirements": [],
-  "version": "0.5.0"
+  "version": "0.5.1"
 }
