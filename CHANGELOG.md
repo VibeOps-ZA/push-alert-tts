@@ -5,6 +5,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-06
+
+### Fixed
+- The device page showed version 0.5.3 for 0.5.4 (`const.VERSION` was not bumped). Now matches the manifest.
+
 ### Changed
 - Import order sorted after the 0.5.4 rename (lint only; no behaviour change).
 
