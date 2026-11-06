@@ -5,6 +5,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-06
+
+### Added
+- AI wording, Ollama only: optional **GPU layers** (`num_gpu`) setting. With
+  **Context size**, it lets alerts use the model exactly as other programs
+  load it, so Ollama does not reload it (15-25 s) before an alert. Empty =
+  Ollama decides, as before.
+
 ## [0.5.2] - 2026-11-06
 
 ### Changed

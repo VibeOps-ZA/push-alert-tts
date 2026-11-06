@@ -148,6 +148,7 @@ async def ask(
     max_tokens: int = 120,
     context_size: int | None = None,
     keep_alive: str | int | None = None,
+    gpu_layers: int | None = None,
 ) -> str:
     """Send one chat request; return the raw answer text or raise AIError."""
     target = endpoint(api, url)
@@ -178,6 +179,8 @@ async def ask(
         # does not reload it (slow) every time the caller changes.
         if context_size:
             body["options"]["num_ctx"] = int(context_size)
+        if gpu_layers is not None:
+            body["options"]["num_gpu"] = int(gpu_layers)
         if keep_alive is not None and keep_alive != "":
             body["keep_alive"] = keep_alive
     client_timeout = aiohttp.ClientTimeout(

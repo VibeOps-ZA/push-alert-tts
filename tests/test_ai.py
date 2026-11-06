@@ -230,6 +230,7 @@ async def test_ai_text_is_spoken_and_recorded(
     _method, _url, body, _headers = aioclient_mock.mock_calls[0]
     assert body["model"] == "test-model" and body["think"] is False
     assert "num_ctx" not in body["options"] and "keep_alive" not in body  # defaults
+    assert "num_gpu" not in body["options"]
     assert body["messages"][1]["content"] == _msg(1)["message"]  # raw, untouched
     assert "- Say HAProxy as HA proxy" in body["messages"][0]["content"]
 
@@ -456,14 +457,20 @@ async def test_ollama_model_settings_are_sent(
     async_mock_service(hass, "media_player", "volume_set")
     aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme. Disk full."))
     runtime = await _setup(
-        hass, mock_entry, **AI, ai_context_size=16384, ai_keep_alive="-1"
+        hass,
+        mock_entry,
+        **AI,
+        ai_context_size=8192,
+        ai_keep_alive="-1",
+        ai_gpu_layers=32,
     )
     runtime.enabled = True
 
     await _alert(hass, runtime, _msg(1))
 
     _method, _url, body, _headers = aioclient_mock.mock_calls[0]
-    assert body["options"]["num_ctx"] == 16384
+    assert body["options"]["num_ctx"] == 8192
+    assert body["options"]["num_gpu"] == 32
     assert body["keep_alive"] == -1
     assert _history(runtime)[-1]["spoken_source"] == "ai"
 
@@ -483,3 +490,19 @@ async def test_invalid_stored_keep_alive_is_ignored(
     _method, _url, body, _headers = aioclient_mock.mock_calls[0]
     assert "keep_alive" not in body  # bad value: server default, alert still worded
     assert _history(runtime)[-1]["spoken_source"] == "ai"
+
+
+async def test_gpu_layers_zero_means_cpu_only(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme. Disk full."))
+    runtime = await _setup(hass, mock_entry, **AI, ai_gpu_layers=0)
+    runtime.enabled = True
+
+    await _alert(hass, runtime, _msg(1))
+
+    _method, _url, body, _headers = aioclient_mock.mock_calls[0]
+    assert body["options"]["num_gpu"] == 0

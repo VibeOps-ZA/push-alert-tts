@@ -53,6 +53,7 @@ from .const import (
     CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
+    CONF_AI_GPU_LAYERS,
     CONF_AI_INSTRUCTIONS,
     CONF_AI_KEEP_ALIVE,
     CONF_AI_MAX_WORDS,
@@ -84,6 +85,7 @@ from .const import (
     EVENT_ALERT,
     ISSUE_STOPPED,
     MAX_AI_CONTEXT,
+    MAX_AI_GPU_LAYERS,
     MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MAX_MESSAGE_INPUT,
@@ -346,15 +348,21 @@ class AlertTTS:
         value = api.as_int(self.options.get(key, default)) or default
         return max(1, min(value, maximum))
 
-    def _ai_model_settings(self) -> tuple[int | None, str | int | None]:
-        """Context size and keep-alive for Ollama; None = server default."""
+    def _ai_model_settings(self) -> tuple[int | None, str | int | None, int | None]:
+        """Context size, keep-alive and GPU layers for Ollama; None = default."""
         context = api.as_int(self.options.get(CONF_AI_CONTEXT)) or 0
         context = min(context, MAX_AI_CONTEXT) if context > 0 else None
         try:
             keep_alive = llm.keep_alive_value(self.options.get(CONF_AI_KEEP_ALIVE))
         except ValueError:
             keep_alive = None
-        return context, keep_alive
+        gpu = self.options.get(CONF_AI_GPU_LAYERS)
+        gpu_layers = (
+            None
+            if gpu is None or gpu == ""
+            else max(0, min(api.as_int(gpu), MAX_AI_GPU_LAYERS))
+        )
+        return context, keep_alive, gpu_layers
 
     @property
     def pending_receipts(self) -> list[str]:
@@ -808,7 +816,7 @@ class AlertTTS:
                     CONF_AI_TIMEOUT, DEFAULT_AI_TIMEOUT, MAX_AI_TIMEOUT
                 )
             )
-            context_size, keep_alive = self._ai_model_settings()
+            context_size, keep_alive, gpu_layers = self._ai_model_settings()
             try:
                 answer = await llm.ask(
                     async_get_clientsession(self.hass),
@@ -824,6 +832,7 @@ class AlertTTS:
                     max_tokens=max(60, max_words * 4),
                     context_size=context_size,
                     keep_alive=keep_alive,
+                    gpu_layers=gpu_layers,
                 )
                 result["answer"] = answer
                 result["text"], result["reason"] = llm.check_answer(

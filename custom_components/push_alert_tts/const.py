@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -65,6 +65,7 @@ CONF_AI_INSTRUCTIONS = "ai_instructions"
 CONF_AI_START_PATTERN = "ai_start_pattern"
 CONF_AI_CONTEXT = "ai_context_size"  # Ollama num_ctx
 CONF_AI_KEEP_ALIVE = "ai_keep_alive"  # Ollama keep_alive
+CONF_AI_GPU_LAYERS = "ai_gpu_layers"  # Ollama num_gpu
 CONF_AI_MEMORY = "ai_memory"  # form field only; the memory lives in a file
 AI_OPTION_KEYS = (
     CONF_AI_ENABLED,
@@ -79,6 +80,7 @@ AI_OPTION_KEYS = (
     CONF_AI_START_PATTERN,
     CONF_AI_CONTEXT,
     CONF_AI_KEEP_ALIVE,
+    CONF_AI_GPU_LAYERS,
 )
 AI_API_OLLAMA = "ollama"
 AI_API_OPENAI = "openai"
@@ -88,6 +90,7 @@ MAX_AI_TIMEOUT = 600
 DEFAULT_AI_EMERGENCY_TIMEOUT = 5
 DEFAULT_AI_MAX_WORDS = 20
 MAX_AI_CONTEXT = 1048576  # largest context size accepted (tokens)
+MAX_AI_GPU_LAYERS = 1000
 AI_CONNECT_TIMEOUT = 5  # seconds to open the connection to the LLM
 AI_OFFLINE_SKIP = 60  # after a connection failure, skip the LLM this long
 AI_MEMORY_VERSIONS = 20  # earlier copies of the AI memory kept

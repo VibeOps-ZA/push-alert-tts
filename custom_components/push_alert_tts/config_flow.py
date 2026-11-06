@@ -46,6 +46,7 @@ from .const import (
     CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
+    CONF_AI_GPU_LAYERS,
     CONF_AI_INSTRUCTIONS,
     CONF_AI_KEEP_ALIVE,
     CONF_AI_MAX_WORDS,
@@ -99,6 +100,7 @@ from .const import (
     DEFAULT_REPEAT_MAX,
     DOMAIN,
     MAX_AI_CONTEXT,
+    MAX_AI_GPU_LAYERS,
     MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MESSAGE_MODES,
@@ -625,6 +627,14 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
             ): NumberSelector(
                 NumberSelectorConfig(
                     min=0, max=MAX_AI_CONTEXT, step=1, mode=NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_AI_GPU_LAYERS,
+                description={"suggested_value": current.get(CONF_AI_GPU_LAYERS)},
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0, max=MAX_AI_GPU_LAYERS, step=1, mode=NumberSelectorMode.BOX
                 )
             ),
             vol.Optional(
