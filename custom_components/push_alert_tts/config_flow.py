@@ -110,7 +110,7 @@ from .const import (
     REGEX_SOURCES,
     SOURCE_MESSAGE_TITLE,
 )
-from .llm import DEFAULT_INSTRUCTIONS, keep_alive_value
+from .ai_wording import DEFAULT_INSTRUCTIONS, keep_alive_value
 from .memory import split_lines
 from .spoken import REGEX_FLAGS, unknown_placeholders
 

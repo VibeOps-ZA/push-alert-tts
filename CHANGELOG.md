@@ -5,6 +5,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-06
+
+### Fixed
+- Home Assistant 2026.10+ logged `Error getting tools from LLM platform push_alert_tts` (`module ... has no attribute
+  'async_get_tools'`). HA now treats any integration file named `llm.py` as an "LLM tools" platform for Assist. Push
+  Alert TTS does not provide Assist tools; its `llm.py` was only the AI-wording helper, so it was renamed to
+  `ai_wording.py`. No change to settings or behaviour.
+
 ## [0.5.3] - 2026-11-06
 
 ### Added

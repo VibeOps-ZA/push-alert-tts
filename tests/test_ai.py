@@ -14,7 +14,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pytest_homeassistant_custom_component.common import async_mock_service
 
-from custom_components.push_alert_tts import llm
+from custom_components.push_alert_tts import ai_wording as llm
 from custom_components.push_alert_tts.const import DOMAIN
 from custom_components.push_alert_tts.memory import (
     read_memory,
@@ -303,7 +303,7 @@ async def test_emergency_uses_short_timeout(
 ) -> None:
     runtime = await _setup(hass, mock_entry, **AI)
     with patch(
-        "custom_components.push_alert_tts.llm.ask",
+        "custom_components.push_alert_tts.ai_wording.ask",
         new=AsyncMock(return_value="Alert at Acme. Down."),
     ) as ask:
         await _alert(hass, runtime, _msg(1, priority=2, receipt="r1"))
@@ -436,7 +436,7 @@ async def test_options_ai_section(hass: HomeAssistant, mock_entry, no_listener) 
 
 
 def test_keep_alive_value():
-    from custom_components.push_alert_tts.llm import keep_alive_value
+    from custom_components.push_alert_tts.ai_wording import keep_alive_value
 
     assert keep_alive_value("") is None
     assert keep_alive_value(None) is None

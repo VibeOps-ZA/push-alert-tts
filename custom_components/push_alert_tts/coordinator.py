@@ -41,7 +41,8 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import api, llm
+from . import api
+from . import ai_wording as llm  # not "llm.py": HA 2026.10+ loads that name as an LLM tools platform
 from .client import STATUS_LOGIN_REQUIRED, STATUS_STOPPED, PushoverListener
 from .const import (
     AI_API_OLLAMA,
