@@ -47,6 +47,16 @@ SERVICE_PREVIEW = "preview"
 SERVICE_ADD_MEMORY = "add_ai_memory"
 SERVICE_GET_MEMORY = "get_ai_memory"
 SERVICE_REPROCESS = "reprocess_ai"
+SERVICE_REMOVE_MEMORY = "remove_ai_memory"
+REMOVE_MEMORY_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Optional("line"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Optional("text"): cv.string,
+        }
+    ),
+    cv.has_at_least_one_key("line", "text"),
+)
 REPROCESS_SCHEMA = vol.Schema(
     {
         vol.Optional("days", default=AI_BACKFILL_DEFAULT_DAYS): vol.All(
@@ -147,6 +157,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             "ai_answer": ai["answer"] if ai else None,
             "ai_reason": ai["reason"] if ai else None,
             "ai_seconds": ai["seconds"] if ai else None,
+            "ai_server": ai.get("server") if ai else None,
             "outcome": spoken["outcome"],
             "groups": spoken["groups"],
             "alert": {
@@ -170,7 +181,18 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     async def _get_memory(call: ServiceCall) -> ServiceResponse:
         runtime = _runtime(hass)
-        return {"memory": list(runtime.memory), "path": runtime.memory_path}
+        return {
+            "memory": list(runtime.memory),
+            "numbered": [f"{i}. {m}" for i, m in enumerate(runtime.memory, 1)],
+            "path": runtime.memory_path,
+        }
+
+    async def _remove_memory(call: ServiceCall) -> ServiceResponse:
+        runtime = _runtime(hass)
+        removed = await runtime.async_remove_memory(
+            call.data.get("line"), call.data.get("text")
+        )
+        return {"removed": removed, "memory": list(runtime.memory)}
 
     hass.services.async_register(
         DOMAIN,
@@ -184,6 +206,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         SERVICE_GET_MEMORY,
         _get_memory,
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REMOVE_MEMORY,
+        _remove_memory,
+        schema=REMOVE_MEMORY_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,

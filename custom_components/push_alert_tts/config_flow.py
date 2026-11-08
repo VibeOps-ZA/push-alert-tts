@@ -45,6 +45,9 @@ from .const import (
     CONF_AI_API,
     CONF_AI_API_KEY,
     CONF_AI_AUTO_BACKFILL,
+    CONF_AI_BACKUP_CONDITION,
+    CONF_AI_BACKUP_MODEL,
+    CONF_AI_BACKUP_URL,
     CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
@@ -59,6 +62,7 @@ from .const import (
     CONF_AI_START_PATTERN,
     CONF_AI_TIMEOUT,
     CONF_AI_URL,
+    CONF_AI_WAKE_ENTITY,
     CONF_APP_FILTER,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
@@ -115,6 +119,7 @@ from .const import (
     PRIORITIES,
     REGEX_SOURCES,
     SOURCE_MESSAGE_TITLE,
+    WAKE_DOMAINS,
 )
 from .memory import split_lines
 from .spoken import REGEX_FLAGS, unknown_placeholders
@@ -673,5 +678,23 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
                     mode=NumberSelectorMode.BOX,
                 )
             ),
+            vol.Optional(
+                CONF_AI_WAKE_ENTITY,
+                description={"suggested_value": current.get(CONF_AI_WAKE_ENTITY)},
+            ): EntitySelector(EntitySelectorConfig(domain=WAKE_DOMAINS)),
+            vol.Optional(
+                CONF_AI_BACKUP_URL,
+                description={"suggested_value": current.get(CONF_AI_BACKUP_URL)},
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            vol.Optional(
+                CONF_AI_BACKUP_MODEL,
+                description={"suggested_value": current.get(CONF_AI_BACKUP_MODEL)},
+            ): str,
+            vol.Optional(
+                CONF_AI_BACKUP_CONDITION,
+                description={
+                    "suggested_value": current.get(CONF_AI_BACKUP_CONDITION)
+                },
+            ): EntitySelector(),
         }
     )

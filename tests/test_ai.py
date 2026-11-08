@@ -617,17 +617,21 @@ async def test_reprocess_needs_ai_and_history(
 
 
 # -- AI offline: repair alert and automatic re-wording ------------------------------
+@pytest.mark.real_ping
 async def test_missed_alerts_reworded_when_ai_is_back(
     hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
 ) -> None:
     _speakers(hass)
     tts = async_mock_service(hass, "tts", "speak")
     async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.get(OLLAMA, exc=aiohttp.ClientConnectionError("refused"))
     aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
     runtime = await _setup(hass, mock_entry, **AI)
     runtime.enabled = True
     await _alert(hass, runtime, _msg(1))
     assert runtime.ai_down_since is not None
+    reachable = hass.states.get("binary_sensor.push_alert_tts_ai_reachable")
+    assert reachable.state == "off"
     runtime._ai_offline_until = 0.0
 
     aioclient_mock.clear_requests()
@@ -638,12 +642,15 @@ async def test_missed_alerts_reworded_when_ai_is_back(
         await hass.async_block_till_done(wait_background_tasks=True)
 
     assert runtime.ai_down_since is None
+    reachable = hass.states.get("binary_sensor.push_alert_tts_ai_reachable")
+    assert reachable.state == "on"
     row = _history(runtime)[-1]
     assert row["ai_backfilled"] is True
     assert row["ai_text"] == "P1 alert at Acme on database 1. Disk full."
     assert row["spoken_source"] == "filter" and len(tts) == 1  # nothing re-spoken
 
 
+@pytest.mark.real_ping
 async def test_repair_raised_and_cleared(
     hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
 ) -> None:
@@ -676,6 +683,7 @@ async def test_repair_raised_and_cleared(
     assert not any(c[0] == "POST" for c in aioclient_mock.mock_calls)  # no backfill
 
 
+@pytest.mark.real_ping
 async def test_no_checks_when_both_options_off(
     hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
 ) -> None:
@@ -684,3 +692,106 @@ async def test_no_checks_when_both_options_off(
     )
     await runtime.async_check_ai()
     assert aioclient_mock.call_count == 0
+
+
+# -- backup server, wake-up, memory removal, re-word button -------------------------
+BACKUP = "http://backup.local:11434"
+
+
+async def test_backup_server_used_when_main_unreachable(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    tts = async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    hass.states.async_set("binary_sensor.backup_ok", "on")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.post(
+        f"{BACKUP}/api/chat", json=_answer("P1 alert at Acme on database 1. Full.")
+    )
+    runtime = await _setup(
+        hass,
+        mock_entry,
+        **AI,
+        ai_gpu_layers=32,
+        ai_backup_url=BACKUP,
+        ai_backup_model="backup-model",
+        ai_backup_condition="binary_sensor.backup_ok",
+    )
+    runtime.enabled = True
+
+    await _alert(hass, runtime, _msg(1))
+    assert tts[-1].data["message"] == "P1 alert at Acme on database 1. Full."
+    row = _history(runtime)[-1]
+    assert row["ai_server"] == "backup" and row["ai_reason"] is None
+    _m, url, body, _h = aioclient_mock.mock_calls[-1]
+    assert str(url).startswith(BACKUP) and body["model"] == "backup-model"
+    assert "num_gpu" not in body["options"]  # main machine's settings not sent
+    assert runtime.ai_down_since is not None  # the main server is still down
+
+    # Not allowed (condition off): the normal text, straight away.
+    hass.states.async_set("binary_sensor.backup_ok", "off")
+    await _alert(hass, runtime, _msg(2))
+    assert tts[-1].data["message"] == "Alert received"
+    assert _history(runtime)[-1]["ai_reason"] == llm.REASON_OFFLINE_RECENT
+
+
+async def test_wake_entity_pressed_once_while_down(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    presses = async_mock_service(hass, "script", "turn_on")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    runtime = await _setup(hass, mock_entry, **AI, ai_wake_entity="script.wake_pc")
+    await _alert(hass, runtime, _msg(1))
+    runtime._ai_offline_until = 0.0
+    await _alert(hass, runtime, _msg(2))
+    await hass.async_block_till_done()
+    assert len(presses) == 1
+    assert presses[0].data["entity_id"] == "script.wake_pc"
+    # Back up, then down again: pressed again.
+    runtime._set_ai_reachable(True)
+    runtime._set_ai_reachable(False)
+    await hass.async_block_till_done()
+    assert len(presses) == 2
+
+
+async def test_remove_ai_memory(hass: HomeAssistant, mock_entry, no_listener) -> None:
+    runtime = await _setup(hass, mock_entry, **AI)
+    await runtime.async_add_memory("one\ntwo\nthree")
+    got = await hass.services.async_call(
+        DOMAIN, "get_ai_memory", {}, blocking=True, return_response=True
+    )
+    assert got["numbered"] == ["1. one", "2. two", "3. three"]
+    result = await hass.services.async_call(
+        DOMAIN, "remove_ai_memory", {"line": 2}, blocking=True, return_response=True
+    )
+    assert result["removed"] == ["two"] and runtime.memory == ["one", "three"]
+    result = await hass.services.async_call(
+        DOMAIN, "remove_ai_memory", {"text": " three "}, blocking=True,
+        return_response=True,
+    )
+    assert result["removed"] == ["three"] and runtime.memory == ["one"]
+    assert read_memory(runtime.memory_path) == ["one"]
+
+
+async def test_reword_button(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    runtime = await _setup(hass, mock_entry, **AI)
+    await _alert(hass, runtime, _msg(1))
+    runtime._ai_offline_until = 0.0
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme. Disk full."))
+    with patch("custom_components.push_alert_tts.coordinator.AI_BACKFILL_PAUSE", 0):
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": "button.push_alert_tts_re_word_missed_alerts"},
+            blocking=True,
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert _history(runtime)[-1]["ai_text"] == "P1 alert at Acme. Disk full."

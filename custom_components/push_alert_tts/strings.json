@@ -128,7 +128,11 @@
               "ai_start_pattern": "AI answer must start with (optional regex)",
               "ai_memory": "AI memory (corrections, one per line)",
               "ai_auto_backfill": "Re-word missed alerts when the AI is back",
-              "ai_offline_alert": "Repair alert when the AI is unreachable for"
+              "ai_offline_alert": "Repair alert when the AI is unreachable for",
+              "ai_wake_entity": "Wake the AI server with (optional)",
+              "ai_backup_url": "Backup LLM server address (optional)",
+              "ai_backup_model": "Backup model (optional)",
+              "ai_backup_condition": "Use the backup only while (optional)"
             },
             "data_description": {
               "ai_enabled": "Off = alerts are spoken exactly as before.",
@@ -146,7 +150,11 @@
               "ai_start_pattern": "A regular expression the answer must match at its start, e.g. ^(P\\d alert|Alert) at . Other answers are not used. Empty = any speakable answer.",
               "ai_memory": "Plain-language corrections sent with every alert, e.g. Say HAProxy as HA proxy. You can also add lines with the AI correction box or the add_ai_memory action. Earlier versions are kept in the config folder.",
               "ai_auto_backfill": "When the LLM server answers again after being unreachable, alerts that got the normal text meanwhile are worded by the AI for the AI review list (nothing is spoken). Same as running the reprocess_ai action.",
-              "ai_offline_alert": "Minutes. Shows a Home Assistant repair when the LLM server has not answered for this long; it clears itself when the server is back. The server is checked every 5 minutes (a plain web request; no model is loaded). 0 = off."
+              "ai_offline_alert": "Minutes. Shows a Home Assistant repair when the LLM server has not answered for this long; it clears itself when the server is back. The server is checked every 5 minutes (a plain web request; no model is loaded). 0 = off.",
+              "ai_wake_entity": "A button, input button or script that wakes the PC running the LLM, e.g. a Wake on LAN button. It is pressed when the server stops answering, at most once every 10 minutes while it stays unreachable.",
+              "ai_backup_url": "A second LLM server, used only when the main one can't be reached, within the same time limit. Same server type and API key as above. Empty = no backup.",
+              "ai_backup_model": "The model name on the backup server. Empty = the same model as above.",
+              "ai_backup_condition": "Any entity; the backup is only used while it is on (for example a laptop that should only be used on mains power). Empty = whenever needed."
             }
           }
         }
@@ -208,11 +216,17 @@
       },
       "test": {
         "name": "Test announcement"
+      },
+      "reword_missed": {
+        "name": "Re-word missed alerts"
       }
     },
     "binary_sensor": {
       "connected": {
         "name": "Pushover connected"
+      },
+      "ai_reachable": {
+        "name": "AI reachable"
       }
     },
     "sensor": {
@@ -322,7 +336,7 @@
     },
     "get_ai_memory": {
       "name": "Get AI memory",
-      "description": "Return the AI memory (one correction per line)."
+      "description": "Return the AI memory (one correction per line), also numbered for remove_ai_memory."
     },
     "reprocess_ai": {
       "name": "Re-word past alerts with AI",
@@ -335,6 +349,20 @@
         "limit": {
           "name": "Limit",
           "description": "Maximum number of past alerts to word in one run."
+        }
+      }
+    },
+    "remove_ai_memory": {
+      "name": "Remove AI memory",
+      "description": "Remove a correction from the AI memory, by its number (get_ai_memory lists them numbered) or its exact text.",
+      "fields": {
+        "line": {
+          "name": "Line number",
+          "description": "1 = the first line."
+        },
+        "text": {
+          "name": "Text",
+          "description": "The exact text of the line to remove."
         }
       }
     }

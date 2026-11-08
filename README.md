@@ -559,6 +559,8 @@ If you renamed anything, use the names shown on the device page instead.
 | **Pushover connected** `binary_sensor.push_alert_tts_pushover_connected` | Connected / Disconnected. Its *status* attribute is `connected`, `reconnecting`, `login_required` or `stopped`, and *last_error* says why. |
 | **Last alert** `sensor.push_alert_tts_last_alert` | When the last alert arrived. Attributes: title, message, app, priority, count, queued, announced, spoken_text, pending_emergencies, and (since 0.5.0) spoken_source (`ai` or `filter`), filter_text, ai_text, ai_reason, ai_seconds and timings. |
 | **AI review** `sensor.push_alert_tts_ai_review` | How many alerts the AI looked at in the last 3 days. Its *alerts* attribute lists them, newest first: the alert as received, what was spoken, the AI's text and the reason if it wasn't used. Not saved in the recorder database. See [section 18](#18-ai-wording-with-a-local-llm-optional). |
+| **AI reachable** `binary_sensor.push_alert_tts_ai_reachable` | Connected / Disconnected: whether the main LLM server answers (unknown until first checked; unavailable while AI wording is off). Attributes: *unreachable_since*, *last_answer_from* (`main` or `backup`), *backup_set*, *backup_allowed_now*. |
+| **Re-word missed alerts** `button.push_alert_tts_re_word_missed_alerts` | Asks the AI to word the last 3 days' alerts that got no AI text, for the AI review list. Nothing is spoken. Same as the `push_alert_tts.reprocess_ai` action. |
 | **AI correction** `text.push_alert_tts_ai_correction` | Type a correction for the AI in plain words and press Enter: it is added to the AI memory and the box clears. Its *memory* attribute shows the whole memory. |
 
 About speakers:
@@ -799,12 +801,21 @@ Fired when alerts are acknowledged from Home Assistant.
 
 - `push_alert_tts.add_ai_memory` adds a plain-language correction to the AI
   memory (several lines add several). `push_alert_tts.get_ai_memory` returns
-  the memory. See [section 18](#18-ai-wording-with-a-local-llm-optional).
+  the memory, also as a numbered list (`numbered`).
+  `push_alert_tts.remove_ai_memory` removes one line, by its number (`line`,
+  1 = the first) or its exact text (`text`). See
+  [section 18](#18-ai-wording-with-a-local-llm-optional).
 
   ```yaml
   action: push_alert_tts.add_ai_memory
   data:
     text: "Say HAProxy as HA proxy, never abbreviate it."
+  ```
+
+  ```yaml
+  action: push_alert_tts.remove_ai_memory
+  data:
+    line: 3
   ```
 
 - `push_alert_tts.reprocess_ai` (**Re-word past alerts with AI**) asks the AI
@@ -980,10 +991,14 @@ It is **off by default**.
 | **AI answer must start with** *(optional)* | A [regular expression](https://docs.python.org/3/library/re.html#regular-expression-syntax) the answer must match at its start, e.g. `^(P\d alert|Alert) at ` for the shape above. Answers that don't match are not used. Empty = any speakable answer. |
 | **AI memory** | Plain-language corrections, one per line, sent with **every** alert (see below). |
 | **Re-word missed alerts when the AI is back** | On by default. When the LLM server answers again after being unreachable (for example the PC was asleep), the alerts that got the normal text meanwhile are worded by the AI, so they appear in the [AI review](#reviewing-what-it-says) list ready for corrections. **Nothing is spoken.** It does the same as the `push_alert_tts.reprocess_ai` action (section 14), for at least the last 3 days. |
+| **Wake the AI server with** *(optional)* | A button, input button or script that wakes the PC running the LLM, for example a button from Home Assistant's [Wake on LAN integration](https://www.home-assistant.io/integrations/wake_on_lan/). It is pressed when the server stops answering, at most once every 10 minutes while it stays down. Whether the PC wakes depends on its network card and BIOS: over Wi-Fi usually only from sleep, over Ethernet often also from shut down. Empty = off. |
+| **Backup LLM server address** *(optional)* | A second LLM server (same server type and API key), used **only** when the main one can't be reached, within the same *Wait for the AI* time. If both fail, the normal text is spoken as usual. Context size, GPU layers and keep-loaded settings are **not** sent to the backup (they belong to the main PC), so it uses its own defaults; the first answer after it loads the model can be slower. Empty = no backup. |
+| **Backup model** *(optional)* | The model name on the backup server. Empty = the same model as the main one. |
+| **Use the backup only while** *(optional)* | Any entity; the backup is used only while its state is `on`. For example a laptop that must only be used on mains power: pick a sensor or [template helper](https://www.home-assistant.io/integrations/template/) that is on while it's plugged in. Empty = whenever the main server is down. |
 | **Repair alert when the AI is unreachable for** | Minutes (default 30; `0` = off). If the LLM server hasn't answered for this long, a repair appears under **Settings → System → Repairs** ([about repairs](https://www.home-assistant.io/integrations/repairs/)), with the address and since when. It clears itself when the server answers again. Alerts are still spoken with the normal text meanwhile. |
 
 How Push Alert TTS knows the server is there: every 5 minutes (only while
-one of the two settings above is on) it sends a plain web request to the
+*Re-word missed alerts*, the repair alert or *Wake the AI server with* is on) it sends a plain web request to the
 server address, the same as opening it in a browser. That loads no model and
 takes no graphics-card time. Real alerts also count: an alert that can't
 reach the server marks it unreachable, and any answer marks it back.
@@ -1007,6 +1022,10 @@ from then on. Three ways to add one:
 2. The `push_alert_tts.add_ai_memory` action (section 14), e.g. from a script.
 3. The **AI memory** field in the settings, where you can also edit or remove
    lines.
+
+To remove a line without opening the settings, run `push_alert_tts.get_ai_memory`
+to see the numbered lines, then `push_alert_tts.remove_ai_memory` with that
+number (section 14).
 
 The memory is saved in `push_alert_tts/ai_memory_<entry id>.txt` in your
 [configuration folder](https://www.home-assistant.io/docs/configuration/).
@@ -1071,12 +1090,13 @@ milliseconds after the alert reached Home Assistant unless noted:
 for a minute after a failed connection), `llm_timeout`, `llm_http_error`,
 `llm_bad_response`, `llm_empty`, `llm_too_long`, `llm_symbols`,
 `llm_wrong_shape` (didn't match *AI answer must start with*),
-`several_alerts`, `llm_error`; empty when the AI text was used.
+`several_alerts`, `llm_error`; empty when the AI text was used. `ai_server`
+says which server answered: `main` or `backup`.
 
 Alerts re-worded later with `push_alert_tts.reprocess_ai` also hold
 `ai_backfilled` (`true`), `ai_backfill_time` and `ai_first_reason` (why no AI
 text was used at the time). `ai_text`, `ai_answer`, `ai_reason` and
-`ai_seconds` then describe the later attempt; `spoken_text` and
+`ai_seconds` (and `ai_server`) then describe the later attempt; `spoken_text` and
 `spoken_source` still show what was actually spoken.
 
 ### Troubleshooting AI wording

@@ -56,9 +56,13 @@ from .const import (
     AI_PROBE_TIMEOUT,
     AI_REVIEW_DAYS,
     AI_REVIEW_MAX,
+    AI_WAKE_INTERVAL,
     CONF_AI_API,
     CONF_AI_API_KEY,
     CONF_AI_AUTO_BACKFILL,
+    CONF_AI_BACKUP_CONDITION,
+    CONF_AI_BACKUP_MODEL,
+    CONF_AI_BACKUP_URL,
     CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
@@ -71,6 +75,7 @@ from .const import (
     CONF_AI_START_PATTERN,
     CONF_AI_TIMEOUT,
     CONF_AI_URL,
+    CONF_AI_WAKE_ENTITY,
     CONF_EMERGENCY_MESSAGE,
     CONF_FALLBACK_NOTIFY,
     CONF_HISTORY_DAYS,
@@ -186,6 +191,7 @@ def review_row(row: Mapping[str, Any]) -> dict[str, Any]:
         # Re-worded later: why the AI text was not spoken at the time.
         "reason": row.get("ai_reason") or row.get("ai_first_reason"),
         "ai_seconds": row.get("ai_seconds"),
+        "ai_server": row.get("ai_server"),
         "backfilled": bool(row.get("ai_backfilled")),
     }
 
@@ -276,6 +282,7 @@ def apply_backfill(
             ai_answer=result["answer"],
             ai_reason=result["reason"],
             ai_seconds=result["seconds"],
+            ai_server=result.get("server"),
             ai_backfilled=True,
             ai_backfill_time=when.isoformat(timespec="seconds"),
         )
@@ -394,6 +401,9 @@ class AlertTTS:
         # When the LLM server stopped answering (None = it answers).
         self.ai_down_since: datetime | None = None
         self._ai_issue_raised = False
+        self._last_wake = 0.0  # monotonic time of the last wake-up press
+        self.last_server: str | None = None  # "main" or "backup": last to answer
+        self.ai_checked = False  # reachability known (checked or an alert tried)
         self.last_ai: dict[str, Any] | None = None  # last AI attempt
         self.review: deque[dict[str, Any]] = deque(maxlen=AI_REVIEW_MAX)
 
@@ -418,6 +428,21 @@ class AlertTTS:
             and self.options.get(CONF_AI_URL)
             and self.options.get(CONF_AI_MODEL)
         )
+
+    @property
+    def ai_backup_configured(self) -> bool:
+        return bool(self.options.get(CONF_AI_BACKUP_URL))
+
+    @property
+    def ai_backup_allowed(self) -> bool:
+        """A backup server is set, and its condition entity (if any) is on."""
+        if not self.ai_backup_configured:
+            return False
+        condition = self.options.get(CONF_AI_BACKUP_CONDITION)
+        if not condition:
+            return True
+        state = self.hass.states.get(condition)
+        return state is not None and state.state == "on"
 
     @property
     def ai_auto_backfill(self) -> bool:
@@ -486,6 +511,9 @@ class AlertTTS:
                 self._started_at = time.monotonic()
                 self.entry.async_create_background_task(
                     self.hass, self.listener.run(), f"{DOMAIN}_listener"
+                )
+                self.entry.async_create_background_task(
+                    self.hass, self.async_check_ai(), f"{DOMAIN}_ai_check"
                 )
 
         self.entry.async_on_unload(async_at_started(self.hass, _start))
@@ -833,6 +861,7 @@ class AlertTTS:
                 ai_answer=ai["answer"],
                 ai_reason=ai["reason"],
                 ai_seconds=ai["seconds"],
+                ai_server=ai.get("server"),
             )
         rows = [
             history_record(
@@ -889,8 +918,10 @@ class AlertTTS:
         """Ask the LLM to word the alert. None when AI wording is off.
 
         Never raises. ``text`` is None when the normal text must be used, and
-        ``reason`` then says why. ``max_timeout`` caps the time limit;
-        ``track=False`` leaves the last-AI-attempt state alone.
+        ``reason`` then says why. When the main server can't be reached, the
+        backup server (if set and allowed) is tried within the same time
+        limit; ``server`` says which one answered. ``max_timeout`` caps the
+        time limit; ``track=False`` leaves the last-AI-attempt state alone.
         """
         if not self.ai_enabled:
             return None
@@ -900,14 +931,12 @@ class AlertTTS:
             "answer": None,
             "reason": None,
             "seconds": None,
+            "server": None,
         }
+        main_reason: str | None = None
         if len(alerts) != 1 or (spoken and spoken.get("outcome") == OUTCOME_MULTIPLE):
             result["reason"] = llm.REASON_MULTIPLE
-        elif started < self._ai_offline_until:
-            result["reason"] = llm.REASON_OFFLINE_RECENT
         else:
-            opts = self.options
-            max_words = self._ai_number(CONF_AI_MAX_WORDS, DEFAULT_AI_MAX_WORDS, 200)
             timeout = (
                 self._ai_number(
                     CONF_AI_EMERGENCY_TIMEOUT, DEFAULT_AI_EMERGENCY_TIMEOUT, 60
@@ -919,56 +948,98 @@ class AlertTTS:
             )
             if max_timeout is not None:
                 timeout = min(timeout, max_timeout)
-            context_size, keep_alive, gpu_layers = self._ai_model_settings()
-            try:
-                answer = await llm.ask(
-                    async_get_clientsession(self.hass),
-                    api=opts.get(CONF_AI_API) or AI_API_OLLAMA,
-                    url=str(opts.get(CONF_AI_URL)),
-                    model=str(opts.get(CONF_AI_MODEL)),
-                    system=llm.system_prompt(
-                        opts.get(CONF_AI_INSTRUCTIONS), self.memory, max_words
-                    ),
-                    user=llm.alert_text(alerts[0]),
-                    timeout=timeout,
-                    api_key=opts.get(CONF_AI_API_KEY) or None,
-                    max_tokens=max(60, max_words * 4),
-                    context_size=context_size,
-                    keep_alive=keep_alive,
-                    gpu_layers=gpu_layers,
+            if started < self._ai_offline_until:
+                main_reason = llm.REASON_OFFLINE_RECENT
+            else:
+                main_reason = await self._ask_server(
+                    result, alerts[0], timeout, backup=False
                 )
-                result["answer"] = answer
-                result["text"], result["reason"] = llm.check_answer(
-                    answer, max_words, opts.get(CONF_AI_START_PATTERN) or None
-                )
-            except llm.AIError as err:
-                result["reason"] = err.reason
-                if err.reason == llm.REASON_OFFLINE:
+                if main_reason == llm.REASON_OFFLINE:
                     self._ai_offline_until = time.monotonic() + AI_OFFLINE_SKIP
-                _LOGGER.info(
-                    "AI wording not used (%s): %s; speaking the normal text",
-                    err.reason,
-                    err.detail,
-                )
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("AI wording failed; speaking the normal text")
-                result["reason"] = llm.REASON_ERROR
+            result["reason"] = main_reason
+            if main_reason in (llm.REASON_OFFLINE, llm.REASON_OFFLINE_RECENT):
+                left = timeout - (time.monotonic() - started)
+                if self.ai_backup_allowed and left >= 1:
+                    backup_reason = await self._ask_server(
+                        result, alerts[0], int(left), backup=True
+                    )
+                    if result["text"]:
+                        result["reason"] = None
+                    elif backup_reason not in (
+                        llm.REASON_OFFLINE,
+                        llm.REASON_OFFLINE_RECENT,
+                    ):
+                        result["reason"] = backup_reason
         result["seconds"] = round(time.monotonic() - started, 2)
-        if result["reason"] == llm.REASON_OFFLINE:
+        if main_reason == llm.REASON_OFFLINE:
             self._set_ai_reachable(False)
-        elif result["reason"] not in (
-            llm.REASON_OFFLINE_RECENT,
-            llm.REASON_MULTIPLE,
-            llm.REASON_TIMEOUT,
-            llm.REASON_ERROR,
-        ):
-            self._set_ai_reachable(True)  # it answered (well or badly)
+        elif main_reason is not None or result["server"] == "main":
+            if main_reason not in (
+                llm.REASON_OFFLINE_RECENT,
+                llm.REASON_TIMEOUT,
+                llm.REASON_ERROR,
+            ):
+                self._set_ai_reachable(True)  # it answered (well or badly)
         if track:
             self.last_ai = {
                 **result,
                 "time": dt_util.utcnow().isoformat(timespec="seconds"),
             }
         return result
+
+    async def _ask_server(
+        self,
+        result: dict[str, Any],
+        alert: Mapping[str, Any],
+        timeout: int,
+        *,
+        backup: bool,
+    ) -> str | None:
+        """Ask the main or backup server. Fills ``result``; returns the reason."""
+        opts = self.options
+        max_words = self._ai_number(CONF_AI_MAX_WORDS, DEFAULT_AI_MAX_WORDS, 200)
+        if backup:
+            url = str(opts.get(CONF_AI_BACKUP_URL))
+            model = str(opts.get(CONF_AI_BACKUP_MODEL) or opts.get(CONF_AI_MODEL))
+            # Context size and GPU layers belong to the main machine.
+            context_size, keep_alive, gpu_layers = None, None, None
+        else:
+            url = str(opts.get(CONF_AI_URL))
+            model = str(opts.get(CONF_AI_MODEL))
+            context_size, keep_alive, gpu_layers = self._ai_model_settings()
+        name = "backup" if backup else "main"
+        try:
+            answer = await llm.ask(
+                async_get_clientsession(self.hass),
+                api=opts.get(CONF_AI_API) or AI_API_OLLAMA,
+                url=url,
+                model=model,
+                system=llm.system_prompt(
+                    opts.get(CONF_AI_INSTRUCTIONS), self.memory, max_words
+                ),
+                user=llm.alert_text(alert),
+                timeout=timeout,
+                api_key=opts.get(CONF_AI_API_KEY) or None,
+                max_tokens=max(60, max_words * 4),
+                context_size=context_size,
+                keep_alive=keep_alive,
+                gpu_layers=gpu_layers,
+            )
+        except llm.AIError as err:
+            _LOGGER.info(
+                "AI wording (%s server) not used (%s): %s", name, err.reason, err.detail
+            )
+            return err.reason
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("AI wording (%s server) failed", name)
+            return llm.REASON_ERROR
+        result["server"] = name
+        result["answer"] = answer
+        result["text"], reason = llm.check_answer(
+            answer, max_words, opts.get(CONF_AI_START_PATTERN) or None
+        )
+        self.last_server = name
+        return reason
 
     # -- is the LLM server there? -------------------------------------------------
     async def async_check_ai(self) -> None:
@@ -977,7 +1048,11 @@ class AlertTTS:
             self._clear_ai_issue()
             self.ai_down_since = None
             return
-        if not (self.ai_auto_backfill or self.ai_offline_alert_minutes):
+        if not (
+            self.ai_auto_backfill
+            or self.ai_offline_alert_minutes
+            or self.options.get(CONF_AI_WAKE_ENTITY)
+        ):
             return
         reachable = await llm.ping(
             async_get_clientsession(self.hass),
@@ -989,9 +1064,14 @@ class AlertTTS:
     @callback
     def _set_ai_reachable(self, reachable: bool) -> None:
         now = dt_util.utcnow()
+        if not self.ai_checked:
+            self.ai_checked = True
+            self.update_entities()
         if not reachable:
             if self.ai_down_since is None:
                 self.ai_down_since = now
+                self.update_entities()
+            self._wake_ai()
             minutes = self.ai_offline_alert_minutes
             if (
                 minutes
@@ -1015,7 +1095,10 @@ class AlertTTS:
                 )
             return
         since, self.ai_down_since = self.ai_down_since, None
+        self._last_wake = 0.0
         self._clear_ai_issue()
+        if since is not None:
+            self.update_entities()
         if since is None or not self.ai_auto_backfill or self._stopping:
             return
         # Back after an outage: word the alerts it missed (never spoken).
@@ -1023,8 +1106,34 @@ class AlertTTS:
         _LOGGER.info("AI is answering again; re-wording alerts it missed")
         self.entry.async_create_background_task(
             self.hass,
-            self._auto_backfill(min(days, MAX_HISTORY_DAYS)),
+            self.async_reprocess_ai_quietly(min(days, MAX_HISTORY_DAYS), delay=True),
             f"{DOMAIN}_ai_backfill",
+        )
+
+    @callback
+    def _wake_ai(self) -> None:
+        """Press the wake-up button/script (at most every AI_WAKE_INTERVAL)."""
+        entity_id = self.options.get(CONF_AI_WAKE_ENTITY)
+        if not entity_id or self._stopping:
+            return
+        now = time.monotonic()
+        if self._last_wake and now - self._last_wake < AI_WAKE_INTERVAL:
+            return
+        self._last_wake = now
+        domain = entity_id.split(".", 1)[0]
+        service = "turn_on" if domain == "script" else "press"
+        _LOGGER.info("AI server unreachable; waking it with %s", entity_id)
+
+        async def _call() -> None:
+            try:
+                await self.hass.services.async_call(
+                    domain, service, {ATTR_ENTITY_ID: entity_id}, blocking=False
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning("Could not run %s to wake the AI server", entity_id)
+
+        self.entry.async_create_background_task(
+            self.hass, _call(), f"{DOMAIN}_ai_wake"
         )
 
     @callback
@@ -1033,10 +1142,14 @@ class AlertTTS:
             self._ai_issue_raised = False
             ir.async_delete_issue(self.hass, DOMAIN, ISSUE_AI_OFFLINE)
 
-    async def _auto_backfill(self, days: int) -> None:
-        await asyncio.sleep(AI_BACKFILL_PAUSE)  # let the alert that found it go first
+    async def async_reprocess_ai_quietly(
+        self, days: int, limit: int = AI_BACKFILL_MAX, delay: bool = False
+    ) -> None:
+        """reprocess_ai in the background: errors are logged, not raised."""
+        if delay:
+            await asyncio.sleep(AI_BACKFILL_PAUSE)  # let the alert that found it go first
         try:
-            result = await self.async_reprocess_ai(days, AI_BACKFILL_MAX)
+            result = await self.async_reprocess_ai(days, limit)
         except HomeAssistantError as err:
             _LOGGER.debug("Automatic re-wording skipped: %s", err)
             return
@@ -1138,6 +1251,22 @@ class AlertTTS:
             )
             self.memory = list(lines)
         self.update_entities()
+
+    async def async_remove_memory(
+        self, line: int | None = None, text: str | None = None
+    ) -> list[str]:
+        """Remove memory line(s) by number (1 = first) or exact text."""
+        keep = list(self.memory)
+        removed: list[str] = []
+        if line is not None and 1 <= line <= len(keep):
+            removed.append(keep.pop(line - 1))
+        if text:
+            wanted = text.strip()
+            removed += [m for m in keep if m.strip() == wanted]
+            keep = [m for m in keep if m.strip() != wanted]
+        if removed:
+            await self.async_set_memory(keep)
+        return removed
 
     async def async_add_memory(self, text: str) -> list[str]:
         """Add plain-language correction(s), exactly as written."""

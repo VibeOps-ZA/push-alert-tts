@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -69,6 +69,10 @@ CONF_AI_GPU_LAYERS = "ai_gpu_layers"  # Ollama num_gpu
 CONF_AI_MEMORY = "ai_memory"  # form field only; the memory lives in a file
 CONF_AI_AUTO_BACKFILL = "ai_auto_backfill"
 CONF_AI_OFFLINE_ALERT = "ai_offline_alert"
+CONF_AI_WAKE_ENTITY = "ai_wake_entity"  # button/script pressed to wake the LLM PC
+CONF_AI_BACKUP_URL = "ai_backup_url"
+CONF_AI_BACKUP_MODEL = "ai_backup_model"
+CONF_AI_BACKUP_CONDITION = "ai_backup_condition"  # entity that must be on
 AI_OPTION_KEYS = (
     CONF_AI_ENABLED,
     CONF_AI_API,
@@ -85,6 +89,10 @@ AI_OPTION_KEYS = (
     CONF_AI_GPU_LAYERS,
     CONF_AI_AUTO_BACKFILL,
     CONF_AI_OFFLINE_ALERT,
+    CONF_AI_WAKE_ENTITY,
+    CONF_AI_BACKUP_URL,
+    CONF_AI_BACKUP_MODEL,
+    CONF_AI_BACKUP_CONDITION,
 )
 AI_API_OLLAMA = "ollama"
 AI_API_OPENAI = "openai"
@@ -110,6 +118,8 @@ AI_PROBE_TIMEOUT = 10  # seconds for one check
 DEFAULT_AI_AUTO_BACKFILL = True
 DEFAULT_AI_OFFLINE_ALERT = 30  # minutes; 0 = no alert
 MAX_AI_OFFLINE_ALERT = 1440
+AI_WAKE_INTERVAL = 600  # press the wake button at most this often (seconds)
+WAKE_DOMAINS = ["button", "input_button", "script"]
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"

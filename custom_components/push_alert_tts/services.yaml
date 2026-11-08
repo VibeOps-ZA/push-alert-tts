@@ -78,6 +78,22 @@ add_ai_memory:
         text:
           multiline: true
 get_ai_memory:
+remove_ai_memory:
+  fields:
+    line:
+      required: false
+      example: 3
+      selector:
+        number:
+          min: 1
+          max: 500
+          mode: box
+    text:
+      required: false
+      example: "Say HAProxy as HA proxy, never abbreviate it."
+      selector:
+        text:
+          multiline: true
 reprocess_ai:
   fields:
     days:

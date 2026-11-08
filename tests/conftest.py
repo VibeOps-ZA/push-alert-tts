@@ -39,6 +39,19 @@ def fast_timings():
         yield
 
 
+@pytest.fixture(autouse=True)
+def fake_ping(request):
+    """The AI-server check answers 'reachable' unless a test needs the real one."""
+    if request.node.get_closest_marker("real_ping"):
+        yield
+        return
+    with patch(
+        "custom_components.push_alert_tts.ai_wording.ping",
+        new=AsyncMock(return_value=True),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_entry() -> MockConfigEntry:
     return MockConfigEntry(

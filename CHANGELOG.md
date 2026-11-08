@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
+### Added
+- **Wake the AI server with** (AI wording options): a button, input button or script pressed when the LLM server
+  stops answering (for example a Wake-on-LAN button), at most once every 10 minutes while it stays down.
+- **Backup LLM server**: *Backup LLM server address*, *Backup model* and *Use the backup only while* (an entity that
+  must be on). Used only when the main server can't be reached, within the same time limit; if both fail, the
+  normal text is spoken as before. History, preview and the AI review list record which server answered
+  (`ai_server`: `main` or `backup`).
+- `push_alert_tts.remove_ai_memory` removes an AI-memory line by number or exact text; `get_ai_memory` also returns
+  the lines numbered.
+- Entities: **AI reachable** (binary sensor) and **Re-word missed alerts** (button, same as `reprocess_ai`).
+- The LLM server is also checked once at start-up, so *AI reachable* has a state straight away.
+
 ## [0.6.1] - 2026-11-08
 
 ### Added
