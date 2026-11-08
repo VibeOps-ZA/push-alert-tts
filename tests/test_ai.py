@@ -11,6 +11,7 @@ import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pytest_homeassistant_custom_component.common import async_mock_service
 
@@ -506,3 +507,108 @@ async def test_gpu_layers_zero_means_cpu_only(
 
     _method, _url, body, _headers = aioclient_mock.mock_calls[0]
     assert body["options"]["num_gpu"] == 0
+
+
+# -- re-wording past alerts (reprocess_ai) ----------------------------------------
+async def test_reprocess_words_missed_alerts_without_speaking(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    tts = async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    runtime = await _setup(hass, mock_entry, **AI)
+    runtime.enabled = True
+    await _alert(hass, runtime, _msg(1))
+    await _alert(hass, runtime, _msg(2, title="[P1] Triggered: http | acme.lb.prod"))
+    await _alert(hass, runtime, _msg(3), _msg(4))  # several at once
+    assert len(tts) == 3
+    runtime._ai_offline_until = 0.0  # the LLM is back
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme on database 1. Disk full."))
+    with patch("custom_components.push_alert_tts.coordinator.AI_BACKFILL_PAUSE", 0):
+        result = await hass.services.async_call(
+            DOMAIN, "reprocess_ai", {"days": 2}, blocking=True, return_response=True
+        )
+    await hass.async_block_till_done()
+
+    assert result["found"] == 4 and result["worded"] == 4
+    assert result["rows_updated"] == 4 and result["stopped"] is None
+    assert len(tts) == 3  # nothing spoken
+    assert runtime.last_ai["reason"] == llm.REASON_MULTIPLE  # untouched
+    rows = _history(runtime)
+    assert [r["ai_first_reason"] for r in rows] == [
+        llm.REASON_OFFLINE,
+        llm.REASON_OFFLINE_RECENT,
+        llm.REASON_MULTIPLE,
+        llm.REASON_MULTIPLE,
+    ]
+    for row in rows:
+        assert row["ai_text"] == "P1 alert at Acme on database 1. Disk full."
+        assert row["ai_reason"] is None and row["ai_backfilled"] is True
+        assert row["spoken_source"] == "filter"  # what was spoken is kept
+    alerts = hass.states.get("sensor.push_alert_tts_ai_review").attributes["alerts"]
+    assert all(a["backfilled"] and a["ai_text"] for a in alerts)
+    assert {a["reason"] for a in alerts} >= {llm.REASON_OFFLINE}
+
+    # Nothing left to do on a second run.
+    again = await hass.services.async_call(
+        DOMAIN, "reprocess_ai", {}, blocking=True, return_response=True
+    )
+    assert again["found"] == 0 and again["rows_updated"] == 0
+
+
+async def test_reprocess_stops_when_llm_unreachable(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    runtime = await _setup(hass, mock_entry, **AI)
+    await _alert(hass, runtime, _msg(1))
+    await _alert(hass, runtime, _msg(2))
+    runtime._ai_offline_until = 0.0
+    before = _history(runtime)
+
+    with patch("custom_components.push_alert_tts.coordinator.AI_BACKFILL_PAUSE", 0):
+        result = await hass.services.async_call(
+            DOMAIN, "reprocess_ai", {}, blocking=True, return_response=True
+        )
+
+    assert result["stopped"] == llm.REASON_OFFLINE
+    assert result["found"] == 2 and result["rows_updated"] == 0
+    assert _history(runtime) == before  # file untouched
+
+
+async def test_reprocess_skips_rows_with_an_answer_and_old_rows(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, json=_answer("Sure, here you go"))
+    runtime = await _setup(
+        hass, mock_entry, **AI, ai_start_pattern=r"^(P\d alert|Alert) at "
+    )
+    await _alert(hass, runtime, _msg(1))  # answered, but the wrong shape
+    old = {**_history(runtime)[0], "received": "2020-01-01T00:00:00+00:00"}
+    old.update(ai_text=None, ai_answer=None, ai_reason=llm.REASON_OFFLINE)
+    with open(runtime.history_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(old) + "\n")
+
+    result = await hass.services.async_call(
+        DOMAIN, "reprocess_ai", {"days": 3}, blocking=True, return_response=True
+    )
+    assert result["found"] == 0
+
+
+async def test_reprocess_needs_ai_and_history(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    await _setup(hass, mock_entry, history_days=31)
+    with pytest.raises(HomeAssistantError, match="AI wording is off"):
+        await hass.services.async_call(
+            DOMAIN, "reprocess_ai", {}, blocking=True, return_response=True
+        )

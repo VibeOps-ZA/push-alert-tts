@@ -5,6 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-08
+
+### Added
+- New action `push_alert_tts.reprocess_ai` (**Re-word past alerts with AI**). It asks the AI to word past alerts
+  that got no AI text, for example while the AI was offline or when several alerts arrived at once, so they show
+  up in the AI review list for checking and teaching. Nothing is spoken, and what was spoken at the time stays
+  recorded. Options: `days` (default 3) and `limit` (default 100, up to 500). It runs one alert at a time, waits
+  while a live alert is being worded or spoken, allows each alert at most 30 seconds, and stops if the AI can't
+  be reached. It only runs when you call it.
+- History rows re-worded this way gain `ai_backfilled`, `ai_backfill_time` and `ai_first_reason` (why no AI text
+  was used at the time). The AI review sensor adds `backfilled` and keeps showing the original reason.
+
 ## [0.5.5] - 2026-11-06
 
 ### Fixed

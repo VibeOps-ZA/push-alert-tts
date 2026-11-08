@@ -807,6 +807,30 @@ Fired when alerts are acknowledged from Home Assistant.
     text: "Say HAProxy as HA proxy, never abbreviate it."
   ```
 
+- `push_alert_tts.reprocess_ai` (**Re-word past alerts with AI**) asks the AI
+  to word past alerts that got no AI text, for example while the AI was
+  offline or when several alerts arrived at once. They then appear in the
+  [AI review](#reviewing-what-it-says) list so you can check them and teach
+  the AI. **Nothing is spoken**, and what was spoken at the time stays
+  recorded. Needs AI wording on and *Keep alert history for* above `0`.
+  Options: `days` (look back this many days, default 3) and `limit` (most
+  alerts per run, default 100, up to 500). It words one alert at a time,
+  waits while a live alert is being worded or spoken, allows each alert at
+  most 30 seconds, and stops if the AI can't be reached. It only runs when
+  you call it. Run it from **Developer tools → Actions** and tick
+  *Return response*:
+
+  ```yaml
+  action: push_alert_tts.reprocess_ai
+  data:
+    days: 3
+  ```
+
+  The response shows `found` (alerts without AI text), `worded`,
+  `rows_updated`, `stopped` (why it stopped early, if it did) and each alert
+  with its new `ai_text`. Running it again skips alerts that already have AI
+  text.
+
 - `push_alert_tts.get_history` returns saved alerts, newest first (needs
   *Keep alert history for* above `0`). Options: `days` (only the last N days),
   `limit` (default 50, up to 1,000) and `search` (text to look for in the
@@ -1002,7 +1026,7 @@ cards:
       {% for r in rows %}
       <tr><td>{{ as_timestamp(r.received) | timestamp_custom('%d %b %H:%M') }}</td>
       <td><details><summary>{{ (r.alert or '').split('\n')[0][:80] | e }}</summary>{{ (r.alert or '') | e | replace('\n', '<br>') }}</details></td>
-      <td>{{ (r.spoken or '') | e }}{% if r.source != 'ai' %} <i>(normal text: {{ r.reason }})</i>{% endif %}</td></tr>
+      <td>{{ (r.spoken or '') | e }}{% if r.source != 'ai' %} <i>(normal text: {{ r.reason }})</i>{% endif %}{% if r.backfilled %}<br><small>AI later: {{ (r.ai_text or '-') | e }}</small>{% endif %}</td></tr>
       {% endfor %}</table>
       {% else %}No alerts in the last 3 days.{% endif %}
   - type: entities
@@ -1013,6 +1037,11 @@ cards:
 
 ([Markdown card](https://www.home-assistant.io/dashboards/markdown/),
 [text entities](https://www.home-assistant.io/integrations/text/).)
+
+If the AI was offline for a while, those alerts show the normal text and no
+AI wording. Run the `push_alert_tts.reprocess_ai` action
+([section 14](#actions)) once the AI is back: it words them without speaking,
+and they appear in the table marked *AI later*, ready for corrections.
 
 ### What is recorded
 
@@ -1035,6 +1064,12 @@ for a minute after a failed connection), `llm_timeout`, `llm_http_error`,
 `llm_bad_response`, `llm_empty`, `llm_too_long`, `llm_symbols`,
 `llm_wrong_shape` (didn't match *AI answer must start with*),
 `several_alerts`, `llm_error`; empty when the AI text was used.
+
+Alerts re-worded later with `push_alert_tts.reprocess_ai` also hold
+`ai_backfilled` (`true`), `ai_backfill_time` and `ai_first_reason` (why no AI
+text was used at the time). `ai_text`, `ai_answer`, `ai_reason` and
+`ai_seconds` then describe the later attempt; `spoken_text` and
+`spoken_source` still show what was actually spoken.
 
 ### Troubleshooting AI wording
 

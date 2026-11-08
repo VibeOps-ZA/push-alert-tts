@@ -78,3 +78,22 @@ add_ai_memory:
         text:
           multiline: true
 get_ai_memory:
+reprocess_ai:
+  fields:
+    days:
+      required: false
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 90
+          mode: box
+          unit_of_measurement: days
+    limit:
+      required: false
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 500
+          mode: box

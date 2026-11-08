@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.5.5"
+VERSION = "0.6.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -97,6 +97,10 @@ AI_MEMORY_VERSIONS = 20  # earlier copies of the AI memory kept
 AI_MEMORY_LINE_MAX = 500  # characters per memory line
 AI_REVIEW_DAYS = 3  # the AI review sensor shows this many days
 AI_REVIEW_MAX = 50  # ... and at most this many alerts
+AI_BACKFILL_TIMEOUT = 30  # max seconds per alert when re-wording past alerts
+AI_BACKFILL_PAUSE = 1  # seconds between past alerts, so live alerts get the LLM
+AI_BACKFILL_DEFAULT_DAYS = 3
+AI_BACKFILL_MAX = 500  # past alerts per run
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"

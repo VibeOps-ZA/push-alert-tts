@@ -315,6 +315,20 @@
     "get_ai_memory": {
       "name": "Get AI memory",
       "description": "Return the AI memory (one correction per line)."
+    },
+    "reprocess_ai": {
+      "name": "Re-word past alerts with AI",
+      "description": "Ask the AI to word past alerts that got no AI text (for example while the AI was offline), so you can review and correct them. Nothing is spoken; what was spoken at the time stays recorded.",
+      "fields": {
+        "days": {
+          "name": "Days",
+          "description": "Look back this many days."
+        },
+        "limit": {
+          "name": "Limit",
+          "description": "Maximum number of past alerts to word in one run."
+        }
+      }
     }
   },
   "exceptions": {

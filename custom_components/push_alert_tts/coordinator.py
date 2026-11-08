@@ -47,6 +47,8 @@ from . import api
 from .client import STATUS_LOGIN_REQUIRED, STATUS_STOPPED, PushoverListener
 from .const import (
     AI_API_OLLAMA,
+    AI_BACKFILL_PAUSE,
+    AI_BACKFILL_TIMEOUT,
     AI_OFFLINE_SKIP,
     AI_REVIEW_DAYS,
     AI_REVIEW_MAX,
@@ -171,8 +173,10 @@ def review_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "spoken": row.get("spoken_text"),
         "ai_text": row.get("ai_text"),
         "source": row.get("spoken_source"),
-        "reason": row.get("ai_reason"),
+        # Re-worded later: why the AI text was not spoken at the time.
+        "reason": row.get("ai_reason") or row.get("ai_first_reason"),
         "ai_seconds": row.get("ai_seconds"),
+        "backfilled": bool(row.get("ai_backfilled")),
     }
 
 
@@ -217,6 +221,61 @@ def append_history(path: str, rows: list[dict[str, Any]]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as handle:
         handle.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+
+
+def _row_key(row: Mapping[str, Any]) -> tuple:
+    return (row.get("received"), row.get("sent"), row.get("title"), row.get("message"))
+
+
+def needs_ai(row: Mapping[str, Any]) -> bool:
+    """A row the AI was asked about (or skipped) but gave no answer for."""
+    return "ai_reason" in row and not row.get("ai_text") and not row.get("ai_answer")
+
+
+def backfill_candidates(
+    path: str, days: int, limit: int, now: datetime
+) -> list[dict[str, Any]]:
+    """Rows from the last `days` days without AI wording, oldest first."""
+    cutoff = now - timedelta(days=days)
+    rows = [
+        r
+        for r in _read_lines(path)
+        if needs_ai(r)
+        and (when := _parse_time(r.get("received"))) is not None
+        and when >= cutoff
+    ]
+    return rows[:limit]
+
+
+def apply_backfill(
+    path: str, results: Mapping[tuple, Mapping[str, Any]], when: datetime
+) -> int:
+    """Store later AI wording in matching rows. What was spoken is kept as it was.
+
+    Rewrites the file atomically (temporary file, then rename). Returns rows changed.
+    """
+    rows = _read_lines(path)
+    changed = 0
+    for row in rows:
+        result = results.get(_row_key(row))
+        if result is None or not needs_ai(row):
+            continue
+        row.setdefault("ai_first_reason", row.get("ai_reason"))
+        row.update(
+            ai_text=result["text"],
+            ai_answer=result["answer"],
+            ai_reason=result["reason"],
+            ai_seconds=result["seconds"],
+            ai_backfilled=True,
+            ai_backfill_time=when.isoformat(timespec="seconds"),
+        )
+        changed += 1
+    if changed:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+        os.replace(tmp, path)
+    return changed
 
 
 def prune_history(path: str, days: int, now: datetime) -> int:
@@ -321,6 +380,7 @@ class AlertTTS:
         self.memory: list[str] = []
         self._memory_lock = asyncio.Lock()
         self._ai_offline_until = 0.0  # monotonic; skip the LLM until then
+        self._backfilling = False
         self.last_ai: dict[str, Any] | None = None  # last AI attempt
         self.review: deque[dict[str, Any]] = deque(maxlen=AI_REVIEW_MAX)
 
@@ -787,11 +847,15 @@ class AlertTTS:
         alerts: list[Mapping[str, Any]],
         spoken: Mapping[str, Any] | None,
         emergency: bool,
+        *,
+        max_timeout: int | None = None,
+        track: bool = True,
     ) -> dict[str, Any] | None:
         """Ask the LLM to word the alert. None when AI wording is off.
 
         Never raises. ``text`` is None when the normal text must be used, and
-        ``reason`` then says why.
+        ``reason`` then says why. ``max_timeout`` caps the time limit;
+        ``track=False`` leaves the last-AI-attempt state alone.
         """
         if not self.ai_enabled:
             return None
@@ -818,6 +882,8 @@ class AlertTTS:
                     CONF_AI_TIMEOUT, DEFAULT_AI_TIMEOUT, MAX_AI_TIMEOUT
                 )
             )
+            if max_timeout is not None:
+                timeout = min(timeout, max_timeout)
             context_size, keep_alive, gpu_layers = self._ai_model_settings()
             try:
                 answer = await llm.ask(
@@ -853,11 +919,89 @@ class AlertTTS:
                 _LOGGER.exception("AI wording failed; speaking the normal text")
                 result["reason"] = llm.REASON_ERROR
         result["seconds"] = round(time.monotonic() - started, 2)
-        self.last_ai = {
-            **result,
-            "time": dt_util.utcnow().isoformat(timespec="seconds"),
-        }
+        if track:
+            self.last_ai = {
+                **result,
+                "time": dt_util.utcnow().isoformat(timespec="seconds"),
+            }
         return result
+
+    async def async_reprocess_ai(self, days: int, limit: int) -> dict[str, Any]:
+        """Word past alerts that got no AI text (e.g. the LLM was offline).
+
+        For review and teaching only: nothing is spoken and what was spoken at
+        the time stays recorded. Live alerts always go first; stops when the
+        LLM can't be reached.
+        """
+        if not self.ai_enabled:
+            raise HomeAssistantError("AI wording is off")
+        if not self.history_days:
+            raise HomeAssistantError("Alert history is off")
+        if self._backfilling:
+            raise HomeAssistantError("Already re-wording past alerts")
+        self._backfilling = True
+        try:
+            return await self._reprocess(days, limit)
+        finally:
+            self._backfilling = False
+
+    async def _reprocess(self, days: int, limit: int) -> dict[str, Any]:
+        rows = await self.hass.async_add_executor_job(
+            backfill_candidates, self.history_path, days, limit, dt_util.utcnow()
+        )
+        results: dict[tuple, dict[str, Any]] = {}
+        done: list[dict[str, Any]] = []
+        stopped = None
+        for row in rows:
+            if self._stopping:
+                stopped = "stopping"
+                break
+            # Never start while a live alert is being worded or spoken.
+            while self._alert_lock.locked() or self._speak_lock.locked():
+                await asyncio.sleep(AI_BACKFILL_PAUSE)
+            key = _row_key(row)
+            if key not in results:
+                ai = await self.ai_wording(
+                    [row], None, False, max_timeout=AI_BACKFILL_TIMEOUT, track=False
+                )
+                if ai is None:
+                    stopped = "ai_off"
+                    break
+                if ai["reason"] in (llm.REASON_OFFLINE, llm.REASON_OFFLINE_RECENT):
+                    stopped = ai["reason"]
+                    break
+                results[key] = ai
+            ai = results[key]
+            done.append(
+                {
+                    "received": row.get("received"),
+                    "title": row.get("title"),
+                    "first_reason": row.get("ai_first_reason") or row.get("ai_reason"),
+                    "ai_text": ai["text"],
+                    "ai_reason": ai["reason"],
+                    "ai_seconds": ai["seconds"],
+                }
+            )
+            await asyncio.sleep(AI_BACKFILL_PAUSE)
+        updated = 0
+        if results:
+            async with self._history_lock:
+                updated = await self.hass.async_add_executor_job(
+                    apply_backfill, self.history_path, results, dt_util.utcnow()
+                )
+                review = await self.hass.async_add_executor_job(
+                    read_review, self.history_path, dt_util.utcnow()
+                )
+            self.review.clear()
+            self.review.extend(review)
+            self.update_entities()
+        return {
+            "found": len(rows),
+            "worded": sum(1 for d in done if d["ai_text"]),
+            "rows_updated": updated,
+            "stopped": stopped,
+            "alerts": done,
+        }
 
     async def async_set_memory(self, lines: list[str]) -> None:
         async with self._memory_lock:

@@ -22,7 +22,12 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
 from .api import as_int
-from .const import DOMAIN, MAX_HISTORY_DAYS
+from .const import (
+    AI_BACKFILL_DEFAULT_DAYS,
+    AI_BACKFILL_MAX,
+    DOMAIN,
+    MAX_HISTORY_DAYS,
+)
 from .coordinator import AlertTTS
 
 PLATFORMS = [
@@ -41,6 +46,17 @@ SERVICE_HISTORY = "get_history"
 SERVICE_PREVIEW = "preview"
 SERVICE_ADD_MEMORY = "add_ai_memory"
 SERVICE_GET_MEMORY = "get_ai_memory"
+SERVICE_REPROCESS = "reprocess_ai"
+REPROCESS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("days", default=AI_BACKFILL_DEFAULT_DAYS): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=MAX_HISTORY_DAYS)
+        ),
+        vol.Optional("limit", default=100): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=AI_BACKFILL_MAX)
+        ),
+    }
+)
 ADD_MEMORY_SCHEMA = vol.Schema({vol.Required("text"): cv.string})
 SPEAK_SCHEMA = vol.Schema({vol.Required("message"): cv.string})
 HISTORY_SCHEMA = vol.Schema(
@@ -147,6 +163,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         added = await runtime.async_add_memory(call.data["text"])
         return {"added": added, "memory": list(runtime.memory)}
 
+    async def _reprocess(call: ServiceCall) -> ServiceResponse:
+        return await _runtime(hass).async_reprocess_ai(
+            call.data["days"], call.data["limit"]
+        )
+
     async def _get_memory(call: ServiceCall) -> ServiceResponse:
         runtime = _runtime(hass)
         return {"memory": list(runtime.memory), "path": runtime.memory_path}
@@ -163,6 +184,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         SERVICE_GET_MEMORY,
         _get_memory,
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REPROCESS,
+        _reprocess,
+        schema=REPROCESS_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(DOMAIN, SERVICE_ACK, _ack)
     hass.services.async_register(DOMAIN, SERVICE_SPEAK, _speak, schema=SPEAK_SCHEMA)
