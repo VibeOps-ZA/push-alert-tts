@@ -979,6 +979,14 @@ It is **off by default**.
 | **Instructions for the AI** | What the AI is told before each alert. The default asks for a short spoken summary and no symbols. Edit it to get a fixed shape, e.g. *Reply with exactly this shape: &lt;level&gt; alert at &lt;customer&gt; on &lt;server&gt;. &lt;reason&gt;.* |
 | **AI answer must start with** *(optional)* | A [regular expression](https://docs.python.org/3/library/re.html#regular-expression-syntax) the answer must match at its start, e.g. `^(P\d alert|Alert) at ` for the shape above. Answers that don't match are not used. Empty = any speakable answer. |
 | **AI memory** | Plain-language corrections, one per line, sent with **every** alert (see below). |
+| **Re-word missed alerts when the AI is back** | On by default. When the LLM server answers again after being unreachable (for example the PC was asleep), the alerts that got the normal text meanwhile are worded by the AI, so they appear in the [AI review](#reviewing-what-it-says) list ready for corrections. **Nothing is spoken.** It does the same as the `push_alert_tts.reprocess_ai` action (section 14), for at least the last 3 days. |
+| **Repair alert when the AI is unreachable for** | Minutes (default 30; `0` = off). If the LLM server hasn't answered for this long, a repair appears under **Settings → System → Repairs** ([about repairs](https://www.home-assistant.io/integrations/repairs/)), with the address and since when. It clears itself when the server answers again. Alerts are still spoken with the normal text meanwhile. |
+
+How Push Alert TTS knows the server is there: every 5 minutes (only while
+one of the two settings above is on) it sends a plain web request to the
+server address, the same as opening it in a browser. That loads no model and
+takes no graphics-card time. Real alerts also count: an alert that can't
+reach the server marks it unreachable, and any answer marks it back.
 
 Tip: test before you rely on it. Run `push_alert_tts.preview` with
 `last_alert: true` (section 14) and compare `ai_text` with `filter_text`.
@@ -1075,6 +1083,7 @@ text was used at the time). `ai_text`, `ai_answer`, `ai_reason` and
 
 | Problem | What to check |
 |---|---|
+| A repair says *the AI is unreachable* | The PC running the LLM is off, asleep or off the network. Wake it (or stop it sleeping while on mains power); the repair clears itself within 5 minutes of the server answering, and missed alerts are re-worded if that setting is on. |
 | Always the normal text, reason `llm_unreachable` | The address and port, `OLLAMA_HOST` on the PC, the PC's firewall, and that the PC is awake. Open `http://<pc address>:11434/api/version` from another device. |
 | Reason `llm_timeout` | The model is too big or the PC is busy (games use the graphics card). Try a smaller model or a longer time limit. The first answer after the model loads is slower. |
 | The first alert after another program used the model is slow (15-20 s) | Ollama is reloading the model because the settings differ. Set **Context size** and **GPU layers** (and **Keep the model loaded for**) to what the other program uses. `ollama ps` on the PC shows the loaded model's context size. |

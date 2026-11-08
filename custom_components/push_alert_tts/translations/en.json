@@ -126,7 +126,9 @@
               "ai_keep_alive": "Keep the model loaded for (Ollama, optional)",
               "ai_instructions": "Instructions for the AI",
               "ai_start_pattern": "AI answer must start with (optional regex)",
-              "ai_memory": "AI memory (corrections, one per line)"
+              "ai_memory": "AI memory (corrections, one per line)",
+              "ai_auto_backfill": "Re-word missed alerts when the AI is back",
+              "ai_offline_alert": "Repair alert when the AI is unreachable for"
             },
             "data_description": {
               "ai_enabled": "Off = alerts are spoken exactly as before.",
@@ -142,7 +144,9 @@
               "ai_keep_alive": "Ollama only. How long the model stays in memory after an alert, e.g. 10m, 1h, or -1 for always. Empty = the server's default (5 minutes unless changed). Set this to match other programs so an alert does not shorten their setting.",
               "ai_instructions": "What the AI is told before each alert. {max_words} is replaced by the number above. Leave as is if unsure.",
               "ai_start_pattern": "A regular expression the answer must match at its start, e.g. ^(P\\d alert|Alert) at . Other answers are not used. Empty = any speakable answer.",
-              "ai_memory": "Plain-language corrections sent with every alert, e.g. Say HAProxy as HA proxy. You can also add lines with the AI correction box or the add_ai_memory action. Earlier versions are kept in the config folder."
+              "ai_memory": "Plain-language corrections sent with every alert, e.g. Say HAProxy as HA proxy. You can also add lines with the AI correction box or the add_ai_memory action. Earlier versions are kept in the config folder.",
+              "ai_auto_backfill": "When the LLM server answers again after being unreachable, alerts that got the normal text meanwhile are worded by the AI for the AI review list (nothing is spoken). Same as running the reprocess_ai action.",
+              "ai_offline_alert": "Minutes. Shows a Home Assistant repair when the LLM server has not answered for this long; it clears itself when the server is back. The server is checked every 5 minutes (a plain web request; no model is loaded). 0 = off."
             }
           }
         }
@@ -233,6 +237,10 @@
     "device_stopped": {
       "title": "Push Alert TTS has stopped receiving alerts",
       "description": "{reason}\n\nFix the cause on pushover.net, then reload the integration (Settings > Devices & services > Push Alert TTS > three dots > Reload)."
+    },
+    "ai_offline": {
+      "title": "Push Alert TTS: the AI is unreachable",
+      "description": "The LLM server at {url} has not answered since {since}. Alerts are still spoken with the normal text, so none are lost. Check that the PC running it is on and awake. This clears itself when the server answers again; missed alerts are then re-worded for the AI review list if that option is on."
     }
   },
   "services": {

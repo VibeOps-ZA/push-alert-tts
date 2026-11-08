@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-08
+
+### Added
+- **Re-word missed alerts when the AI is back** (AI wording options, on by default). When the LLM server answers
+  again after being unreachable, alerts that got the normal text meanwhile are worded by the AI for the AI review
+  list, the same as running `push_alert_tts.reprocess_ai` (at least the last 3 days). Nothing is spoken.
+- **Repair alert when the AI is unreachable for** (AI wording options, default 30 minutes, 0 = off). Raises a Home
+  Assistant repair when the LLM server hasn't answered for that long; it clears itself when the server is back.
+- While either option is on, the LLM server is checked every 5 minutes with a plain web request to its address
+  (no model is loaded). Real alerts also update whether it is reachable.
+
+### Changed
+- Live alerts are unchanged: if the AI can't be reached, the normal text is still spoken straight away.
+
 ## [0.6.0] - 2026-11-08
 
 ### Added

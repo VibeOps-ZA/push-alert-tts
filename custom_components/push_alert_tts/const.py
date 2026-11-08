@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -67,6 +67,8 @@ CONF_AI_CONTEXT = "ai_context_size"  # Ollama num_ctx
 CONF_AI_KEEP_ALIVE = "ai_keep_alive"  # Ollama keep_alive
 CONF_AI_GPU_LAYERS = "ai_gpu_layers"  # Ollama num_gpu
 CONF_AI_MEMORY = "ai_memory"  # form field only; the memory lives in a file
+CONF_AI_AUTO_BACKFILL = "ai_auto_backfill"
+CONF_AI_OFFLINE_ALERT = "ai_offline_alert"
 AI_OPTION_KEYS = (
     CONF_AI_ENABLED,
     CONF_AI_API,
@@ -81,6 +83,8 @@ AI_OPTION_KEYS = (
     CONF_AI_CONTEXT,
     CONF_AI_KEEP_ALIVE,
     CONF_AI_GPU_LAYERS,
+    CONF_AI_AUTO_BACKFILL,
+    CONF_AI_OFFLINE_ALERT,
 )
 AI_API_OLLAMA = "ollama"
 AI_API_OPENAI = "openai"
@@ -101,6 +105,11 @@ AI_BACKFILL_TIMEOUT = 30  # max seconds per alert when re-wording past alerts
 AI_BACKFILL_PAUSE = 1  # seconds between past alerts, so live alerts get the LLM
 AI_BACKFILL_DEFAULT_DAYS = 3
 AI_BACKFILL_MAX = 500  # past alerts per run
+AI_PROBE_INTERVAL = 300  # seconds between checks that the LLM server answers
+AI_PROBE_TIMEOUT = 10  # seconds for one check
+DEFAULT_AI_AUTO_BACKFILL = True
+DEFAULT_AI_OFFLINE_ALERT = 30  # minutes; 0 = no alert
+MAX_AI_OFFLINE_ALERT = 1440
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"
@@ -176,3 +185,4 @@ MESSAGE_FIELDS = (
 
 ISSUE_LOGIN = "login_failed"
 ISSUE_STOPPED = "device_stopped"
+ISSUE_AI_OFFLINE = "ai_offline"

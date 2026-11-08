@@ -207,6 +207,21 @@ async def ask(
         raise AIError(REASON_BAD_RESPONSE, f"unexpected answer: {err}") from err
 
 
+async def ping(
+    session: aiohttp.ClientSession, url: str, timeout: float
+) -> bool:
+    """True if the LLM server answers at all (any HTTP status). Loads no model."""
+    try:
+        async with session.get(
+            url.strip().rstrip("/") or url,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            await resp.read()
+            return True
+    except (TimeoutError, aiohttp.ClientError):
+        return False
+
+
 async def _post(
     session: aiohttp.ClientSession,
     target: str,

@@ -44,6 +44,7 @@ from .const import (
     AI_OPTION_KEYS,
     CONF_AI_API,
     CONF_AI_API_KEY,
+    CONF_AI_AUTO_BACKFILL,
     CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
@@ -53,6 +54,7 @@ from .const import (
     CONF_AI_MAX_WORDS,
     CONF_AI_MEMORY,
     CONF_AI_MODEL,
+    CONF_AI_OFFLINE_ALERT,
     CONF_AI_SECTION,
     CONF_AI_START_PATTERN,
     CONF_AI_TIMEOUT,
@@ -85,8 +87,10 @@ from .const import (
     CONF_TTS_LANGUAGE,
     CONF_TWOFA,
     CONF_USER_KEY,
+    DEFAULT_AI_AUTO_BACKFILL,
     DEFAULT_AI_EMERGENCY_TIMEOUT,
     DEFAULT_AI_MAX_WORDS,
+    DEFAULT_AI_OFFLINE_ALERT,
     DEFAULT_AI_TIMEOUT,
     DEFAULT_DEVICE_NAME,
     DEFAULT_EMERGENCY_MESSAGE,
@@ -102,6 +106,7 @@ from .const import (
     DOMAIN,
     MAX_AI_CONTEXT,
     MAX_AI_GPU_LAYERS,
+    MAX_AI_OFFLINE_ALERT,
     MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MESSAGE_MODES,
@@ -652,5 +657,21 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
             vol.Optional(
                 CONF_AI_MEMORY, description={"suggested_value": memory_text}
             ): TextSelector(TextSelectorConfig(multiline=True)),
+            vol.Optional(
+                CONF_AI_AUTO_BACKFILL,
+                default=bool(opt(CONF_AI_AUTO_BACKFILL, DEFAULT_AI_AUTO_BACKFILL)),
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_AI_OFFLINE_ALERT,
+                default=opt(CONF_AI_OFFLINE_ALERT, DEFAULT_AI_OFFLINE_ALERT),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=MAX_AI_OFFLINE_ALERT,
+                    step=1,
+                    unit_of_measurement="min",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
         }
     )

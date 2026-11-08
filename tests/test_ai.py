@@ -408,6 +408,8 @@ async def test_options_ai_section(hass: HomeAssistant, mock_entry, no_listener) 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert mock_entry.options["ai_url"] == OLLAMA and mock_entry.options["ai_enabled"]
     assert "ai_memory" not in mock_entry.options
+    assert mock_entry.options["ai_auto_backfill"] is True  # defaults
+    assert mock_entry.options["ai_offline_alert"] == 30
     assert runtime.memory == [
         "Say HAProxy as HA proxy",
         "Xyz servers: leave the name out",
@@ -612,3 +614,73 @@ async def test_reprocess_needs_ai_and_history(
         await hass.services.async_call(
             DOMAIN, "reprocess_ai", {}, blocking=True, return_response=True
         )
+
+
+# -- AI offline: repair alert and automatic re-wording ------------------------------
+async def test_missed_alerts_reworded_when_ai_is_back(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    tts = async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    runtime = await _setup(hass, mock_entry, **AI)
+    runtime.enabled = True
+    await _alert(hass, runtime, _msg(1))
+    assert runtime.ai_down_since is not None
+    runtime._ai_offline_until = 0.0
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OLLAMA, text="Ollama is running")
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme on database 1. Disk full."))
+    with patch("custom_components.push_alert_tts.coordinator.AI_BACKFILL_PAUSE", 0):
+        await runtime.async_check_ai()
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert runtime.ai_down_since is None
+    row = _history(runtime)[-1]
+    assert row["ai_backfilled"] is True
+    assert row["ai_text"] == "P1 alert at Acme on database 1. Disk full."
+    assert row["spoken_source"] == "filter" and len(tts) == 1  # nothing re-spoken
+
+
+async def test_repair_raised_and_cleared(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    from datetime import timedelta
+
+    from homeassistant.helpers import issue_registry as ir
+    from homeassistant.util import dt as dt_util
+
+    aioclient_mock.get(OLLAMA, exc=aiohttp.ClientConnectionError("refused"))
+    runtime = await _setup(
+        hass, mock_entry, **AI, ai_offline_alert=30, ai_auto_backfill=False
+    )
+    registry = ir.async_get(hass)
+
+    await runtime.async_check_ai()
+    assert runtime.ai_down_since is not None
+    assert registry.async_get_issue(DOMAIN, "ai_offline") is None  # not yet 30 min
+
+    runtime.ai_down_since = dt_util.utcnow() - timedelta(minutes=31)
+    await runtime.async_check_ai()
+    issue = registry.async_get_issue(DOMAIN, "ai_offline")
+    assert issue is not None and issue.translation_placeholders["url"] == OLLAMA
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OLLAMA, status=404)  # any answer means it is there
+    await runtime.async_check_ai()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert runtime.ai_down_since is None
+    assert registry.async_get_issue(DOMAIN, "ai_offline") is None
+    assert not any(c[0] == "POST" for c in aioclient_mock.mock_calls)  # no backfill
+
+
+async def test_no_checks_when_both_options_off(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    runtime = await _setup(
+        hass, mock_entry, **AI, ai_offline_alert=0, ai_auto_backfill=False
+    )
+    await runtime.async_check_ai()
+    assert aioclient_mock.call_count == 0

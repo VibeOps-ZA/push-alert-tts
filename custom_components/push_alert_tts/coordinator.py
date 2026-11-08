@@ -47,13 +47,18 @@ from . import api
 from .client import STATUS_LOGIN_REQUIRED, STATUS_STOPPED, PushoverListener
 from .const import (
     AI_API_OLLAMA,
+    AI_BACKFILL_DEFAULT_DAYS,
+    AI_BACKFILL_MAX,
     AI_BACKFILL_PAUSE,
     AI_BACKFILL_TIMEOUT,
     AI_OFFLINE_SKIP,
+    AI_PROBE_INTERVAL,
+    AI_PROBE_TIMEOUT,
     AI_REVIEW_DAYS,
     AI_REVIEW_MAX,
     CONF_AI_API,
     CONF_AI_API_KEY,
+    CONF_AI_AUTO_BACKFILL,
     CONF_AI_CONTEXT,
     CONF_AI_EMERGENCY_TIMEOUT,
     CONF_AI_ENABLED,
@@ -62,6 +67,7 @@ from .const import (
     CONF_AI_KEEP_ALIVE,
     CONF_AI_MAX_WORDS,
     CONF_AI_MODEL,
+    CONF_AI_OFFLINE_ALERT,
     CONF_AI_START_PATTERN,
     CONF_AI_TIMEOUT,
     CONF_AI_URL,
@@ -75,8 +81,10 @@ from .const import (
     CONF_SPEAKERS,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
+    DEFAULT_AI_AUTO_BACKFILL,
     DEFAULT_AI_EMERGENCY_TIMEOUT,
     DEFAULT_AI_MAX_WORDS,
+    DEFAULT_AI_OFFLINE_ALERT,
     DEFAULT_AI_TIMEOUT,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_HISTORY_DAYS,
@@ -87,9 +95,11 @@ from .const import (
     DOMAIN,
     EVENT_ACK,
     EVENT_ALERT,
+    ISSUE_AI_OFFLINE,
     ISSUE_STOPPED,
     MAX_AI_CONTEXT,
     MAX_AI_GPU_LAYERS,
+    MAX_AI_OFFLINE_ALERT,
     MAX_AI_TIMEOUT,
     MAX_HISTORY_DAYS,
     MAX_MESSAGE_INPUT,
@@ -381,6 +391,9 @@ class AlertTTS:
         self._memory_lock = asyncio.Lock()
         self._ai_offline_until = 0.0  # monotonic; skip the LLM until then
         self._backfilling = False
+        # When the LLM server stopped answering (None = it answers).
+        self.ai_down_since: datetime | None = None
+        self._ai_issue_raised = False
         self.last_ai: dict[str, Any] | None = None  # last AI attempt
         self.review: deque[dict[str, Any]] = deque(maxlen=AI_REVIEW_MAX)
 
@@ -405,6 +418,17 @@ class AlertTTS:
             and self.options.get(CONF_AI_URL)
             and self.options.get(CONF_AI_MODEL)
         )
+
+    @property
+    def ai_auto_backfill(self) -> bool:
+        return bool(self.options.get(CONF_AI_AUTO_BACKFILL, DEFAULT_AI_AUTO_BACKFILL))
+
+    @property
+    def ai_offline_alert_minutes(self) -> int:
+        minutes = api.as_int(
+            self.options.get(CONF_AI_OFFLINE_ALERT, DEFAULT_AI_OFFLINE_ALERT)
+        )
+        return max(0, min(minutes, MAX_AI_OFFLINE_ALERT))
 
     def _ai_number(self, key: str, default: int, maximum: int) -> int:
         value = api.as_int(self.options.get(key, default)) or default
@@ -473,6 +497,15 @@ class AlertTTS:
             async_track_time_interval(self.hass, _prune, HISTORY_PRUNE_INTERVAL)
         )
 
+        async def _probe(_now: Any) -> None:
+            await self.async_check_ai()
+
+        self.entry.async_on_unload(
+            async_track_time_interval(
+                self.hass, _probe, timedelta(seconds=AI_PROBE_INTERVAL)
+            )
+        )
+
     @callback
     def async_options_changed(self) -> None:
         """(Re)subscribe to the selected speakers."""
@@ -483,6 +516,8 @@ class AlertTTS:
             self._speaker_unsub = async_track_state_change_event(
                 self.hass, self.speakers, self._on_speaker_change
             )
+        if not self.ai_enabled or not self.ai_offline_alert_minutes:
+            self._clear_ai_issue()
         # Apply a changed (or switched off) history period straight away.
         self.entry.async_create_background_task(
             self.hass, self.async_prune_history(), f"{DOMAIN}_history_prune"
@@ -919,12 +954,101 @@ class AlertTTS:
                 _LOGGER.exception("AI wording failed; speaking the normal text")
                 result["reason"] = llm.REASON_ERROR
         result["seconds"] = round(time.monotonic() - started, 2)
+        if result["reason"] == llm.REASON_OFFLINE:
+            self._set_ai_reachable(False)
+        elif result["reason"] not in (
+            llm.REASON_OFFLINE_RECENT,
+            llm.REASON_MULTIPLE,
+            llm.REASON_TIMEOUT,
+            llm.REASON_ERROR,
+        ):
+            self._set_ai_reachable(True)  # it answered (well or badly)
         if track:
             self.last_ai = {
                 **result,
                 "time": dt_util.utcnow().isoformat(timespec="seconds"),
             }
         return result
+
+    # -- is the LLM server there? -------------------------------------------------
+    async def async_check_ai(self) -> None:
+        """Every few minutes: does the LLM server answer? (Loads no model.)"""
+        if self._stopping or not self.ai_enabled:
+            self._clear_ai_issue()
+            self.ai_down_since = None
+            return
+        if not (self.ai_auto_backfill or self.ai_offline_alert_minutes):
+            return
+        reachable = await llm.ping(
+            async_get_clientsession(self.hass),
+            str(self.options.get(CONF_AI_URL)),
+            AI_PROBE_TIMEOUT,
+        )
+        self._set_ai_reachable(reachable)
+
+    @callback
+    def _set_ai_reachable(self, reachable: bool) -> None:
+        now = dt_util.utcnow()
+        if not reachable:
+            if self.ai_down_since is None:
+                self.ai_down_since = now
+            minutes = self.ai_offline_alert_minutes
+            if (
+                minutes
+                and not self._ai_issue_raised
+                and now - self.ai_down_since >= timedelta(minutes=minutes)
+            ):
+                self._ai_issue_raised = True
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    ISSUE_AI_OFFLINE,
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key=ISSUE_AI_OFFLINE,
+                    translation_placeholders={
+                        "url": str(self.options.get(CONF_AI_URL)),
+                        "since": dt_util.as_local(self.ai_down_since).strftime(
+                            "%Y-%m-%d %H:%M"
+                        ),
+                    },
+                )
+            return
+        since, self.ai_down_since = self.ai_down_since, None
+        self._clear_ai_issue()
+        if since is None or not self.ai_auto_backfill or self._stopping:
+            return
+        # Back after an outage: word the alerts it missed (never spoken).
+        days = max(AI_BACKFILL_DEFAULT_DAYS, (now - since).days + 1)
+        _LOGGER.info("AI is answering again; re-wording alerts it missed")
+        self.entry.async_create_background_task(
+            self.hass,
+            self._auto_backfill(min(days, MAX_HISTORY_DAYS)),
+            f"{DOMAIN}_ai_backfill",
+        )
+
+    @callback
+    def _clear_ai_issue(self) -> None:
+        if self._ai_issue_raised:
+            self._ai_issue_raised = False
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_AI_OFFLINE)
+
+    async def _auto_backfill(self, days: int) -> None:
+        await asyncio.sleep(AI_BACKFILL_PAUSE)  # let the alert that found it go first
+        try:
+            result = await self.async_reprocess_ai(days, AI_BACKFILL_MAX)
+        except HomeAssistantError as err:
+            _LOGGER.debug("Automatic re-wording skipped: %s", err)
+            return
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Automatic re-wording of missed alerts failed")
+            return
+        _LOGGER.info(
+            "Re-worded %s of %s missed alerts%s",
+            result["worded"],
+            result["found"],
+            f" (stopped: {result['stopped']})" if result["stopped"] else "",
+        )
 
     async def async_reprocess_ai(self, days: int, limit: int) -> dict[str, Any]:
         """Word past alerts that got no AI text (e.g. the LLM was offline).
