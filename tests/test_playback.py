@@ -217,14 +217,20 @@ async def test_failed_tts_call_is_retried(
     assert not notify
 
 
-async def test_waits_for_group_to_wake_before_speaking(
+async def test_waits_for_speakers_to_wake_before_speaking(
     hass: HomeAssistant, mock_entry, no_listener
 ) -> None:
-    _states(hass, group="off")
+    _states(hass)
+    hass.states.async_set("media_player.kitchen", "off", {"volume_level": 0.3})
     calls = _tts(hass, [GOOD])
     async_mock_service(hass, "media_player", "volume_set")
     runtime = await _setup(hass, mock_entry, **{CONF_WAKE_WAIT: 5})
-    hass.loop.call_later(0.6, lambda: hass.states.async_set(GROUP, "idle", {}))
+    hass.loop.call_later(
+        0.6,
+        lambda: hass.states.async_set(
+            "media_player.kitchen", "idle", {"volume_level": 0.3}
+        ),
+    )
     timings: dict = {}
     t0 = time.monotonic()
     await runtime.speak(TEXT, timings=timings, t0=t0)
@@ -234,10 +240,27 @@ async def test_waits_for_group_to_wake_before_speaking(
     assert len(calls) == 1
 
 
+async def test_group_off_is_not_waited_for(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    """0.9.0 waited for an off Cast group, which only comes on when played to."""
+    _states(hass, group="off")
+    calls = _tts(hass, [GOOD])
+    async_mock_service(hass, "media_player", "volume_set")
+    runtime = await _setup(hass, mock_entry, **{CONF_WAKE_WAIT: 5})
+    timings: dict = {}
+    await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
+    assert "awake_timeout" not in timings
+    assert timings["tts_call_ms"] < 1500
+    assert [c.data["media_player_entity_id"] for c in calls] == [[GROUP]]
+    assert timings["outcome"] == "ok"
+
+
 async def test_wake_wait_gives_up_and_speaks_anyway(
     hass: HomeAssistant, mock_entry, no_listener
 ) -> None:
-    _states(hass, group="off")
+    _states(hass)
+    hass.states.async_set("media_player.kitchen", "off", {"volume_level": 0.3})
     calls = _tts(hass, [GOOD])
     async_mock_service(hass, "media_player", "volume_set")
     runtime = await _setup(hass, mock_entry, **{CONF_WAKE_WAIT: 1})

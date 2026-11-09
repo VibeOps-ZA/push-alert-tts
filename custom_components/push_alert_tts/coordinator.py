@@ -1546,7 +1546,9 @@ class AlertTTS:
                     s,
                     volume_level=round(self.volume / 100, 2),
                 )
-            await self._wait_awake([*ready, *([group] if group_ok else [])], mark)
+            # Only the speakers: a Cast speaker group comes up only once
+            # something is played on it, so waiting for it would just add delay.
+            await self._wait_awake(ready, mark)
             outcome = await self._attempt(group, group_ok, tts_entity, ready, text, mark)
             tries = 1
             while outcome != PLAY_OK and tries <= self.announce_retries:
@@ -1621,11 +1623,11 @@ class AlertTTS:
         return await self._wait_for_playback(ready, before, text, started, mark)
 
     async def _wait_awake(self, players: list[str], mark: _Marks) -> None:
-        """Wait (up to the wake-up time) until every player is on and stays on.
+        """Wait (up to the wake-up time) until every speaker is on and stays on.
 
-        Speakers that were off come up one by one, and a speaker group only
-        wakes after its members; playing before that can lose the start. When
-        the time is up it carries on anyway: the announcement wakes them too.
+        Speakers that were off come up one by one; playing before that can
+        lose the start. When the time is up it carries on anyway: the
+        announcement wakes them too. Not used for the speaker group.
         """
         limit = self.wake_wait
         if not limit or not players:

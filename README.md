@@ -249,13 +249,17 @@ How it works and its safety net:
 ### Wait for speakers to wake up *(default 10 seconds)*
 
 Speakers that were switched off (Google speakers report *off* when idle for
-a while) take a few seconds to come back, and a speaker group only wakes up
-after its speakers. If the announcement starts before that, the first words
-can be lost. Before speaking, Push Alert TTS waits up to this many seconds
-until every speaker in *Speakers* (and the *Speaker group*, if set) is on.
-When the time is up it speaks anyway, because playing the announcement wakes
-them too, so this can only delay an alert by this long, never stop it.
+a while) take a few seconds to come back. If the announcement starts before
+that, the first words can be lost. Before speaking, Push Alert TTS waits up
+to this many seconds until every speaker in *Speakers* is on. When the time
+is up it speaks anyway, because playing the announcement wakes them too, so
+this can only delay an alert by this long, never stop it.
 Set **0** to not wait (the behaviour before version 0.9.0).
+
+The *Speaker group* is not waited for: a Google Cast speaker group only comes
+on once something is played on it, so waiting for it would only add delay
+(version 0.9.0 did that, adding the full wait time when the speakers had been
+off).
 
 ### Retries if an announcement fails or is cut short *(default 1)*
 
@@ -1153,7 +1157,7 @@ milliseconds after the alert reached Home Assistant unless noted:
 | `ai_done_ms` | AI answered (or gave up) |
 | `speak_start_ms` | Announcement started (after any announcement already playing) |
 | `tts_call_ms` / `tts_done_ms` | Text-to-speech asked / audio ready |
-| `awake_ms` | Every speaker (and the group) was awake (only with *Wait for speakers to wake up* above 0) |
+| `awake_ms` | Every speaker in *Speakers* was awake (only with *Wait for speakers to wake up* above 0) |
 | `awake_timeout` | Not a time: `true` when the speakers weren't all awake in time and it spoke anyway |
 | `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it). Finished means stopped for at least 2 seconds; *buffering* counts as playing |
 | `played_s` | Not a time after the alert: seconds the speaker was seen playing |
