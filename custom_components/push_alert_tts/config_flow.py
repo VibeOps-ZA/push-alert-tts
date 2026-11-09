@@ -83,6 +83,7 @@ from .const import (
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
     CONF_SECRET,
+    CONF_SPEAKER_GROUP,
     CONF_SPEAKERS,
     CONF_SPOKEN_TEMPLATE,
     CONF_STORE_PASSWORD,
@@ -382,6 +383,9 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                     errors[CONF_SPOKEN_TEMPLATE] = "template_without_regex"
                 elif unknown_placeholders(template, current.get(CONF_REGEX)):
                     errors[CONF_SPOKEN_TEMPLATE] = "unknown_placeholder"
+            group = current.get(CONF_SPEAKER_GROUP)
+            if group and group in (current.get(CONF_SPEAKERS) or []):
+                errors[CONF_SPEAKER_GROUP] = "group_in_speakers"
             notify = (current.get(CONF_FALLBACK_NOTIFY) or "").strip()
             if notify and not re.match(r"^notify\.[a-z0-9_]+$", notify):
                 errors[CONF_FALLBACK_NOTIFY] = "invalid_notify"
@@ -408,6 +412,10 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                 ): EntitySelector(
                     EntitySelectorConfig(domain="media_player", multiple=True)
                 ),
+                vol.Optional(
+                    CONF_SPEAKER_GROUP,
+                    description={"suggested_value": current.get(CONF_SPEAKER_GROUP)},
+                ): EntitySelector(EntitySelectorConfig(domain="media_player")),
                 vol.Optional(
                     CONF_TTS_ENTITY,
                     description={"suggested_value": current.get(CONF_TTS_ENTITY)},

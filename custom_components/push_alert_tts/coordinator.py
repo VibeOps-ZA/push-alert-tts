@@ -83,6 +83,7 @@ from .const import (
     CONF_OFFLINE_ALERT_DELAY,
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
+    CONF_SPEAKER_GROUP,
     CONF_SPEAKERS,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
@@ -100,6 +101,7 @@ from .const import (
     DOMAIN,
     EVENT_ACK,
     EVENT_ALERT,
+    GROUP_START_TIMEOUT,
     ISSUE_AI_OFFLINE,
     ISSUE_STOPPED,
     MAX_AI_CONTEXT,
@@ -354,6 +356,11 @@ class _Marks:
         if self.timings is not None and self.t0 is not None:
             self.timings[key] = _ms_since(self.t0)
 
+    def note(self, key: str, value: Any) -> None:
+        """Record a plain value (e.g. which route was used)."""
+        if self.timings is not None:
+            self.timings[key] = value
+
 
 class AlertTTS:
     """Everything one Push Alert TTS config entry needs at runtime."""
@@ -415,6 +422,20 @@ class AlertTTS:
     @property
     def speakers(self) -> list[str]:
         return list(self.options.get(CONF_SPEAKERS) or [])
+
+    @property
+    def speaker_group(self) -> str | None:
+        """The speaker group that plays all speakers in sync (None = not used)."""
+        return self.options.get(CONF_SPEAKER_GROUP) or None
+
+    @property
+    def watched_players(self) -> list[str]:
+        """Speakers plus the speaker group (if any), each once."""
+        players = self.speakers
+        group = self.speaker_group
+        if group and group not in players:
+            players.append(group)
+        return players
 
     @property
     def history_days(self) -> int:
@@ -540,9 +561,9 @@ class AlertTTS:
         if self._speaker_unsub:
             self._speaker_unsub()
             self._speaker_unsub = None
-        if self.speakers:
+        if self.watched_players:
             self._speaker_unsub = async_track_state_change_event(
-                self.hass, self.speakers, self._on_speaker_change
+                self.hass, self.watched_players, self._on_speaker_change
             )
         if not self.ai_enabled or not self.ai_offline_alert_minutes:
             self._clear_ai_issue()
@@ -694,7 +715,7 @@ class AlertTTS:
             problems.append("no text-to-speech engine is selected")
         down = [
             s
-            for s in self.speakers
+            for s in self.watched_players
             if (st := self.hass.states.get(s)) is None or st.state in _BAD_STATES
         ]
         if down:
@@ -1360,9 +1381,9 @@ class AlertTTS:
             )
 
     def _speakers_ready(self) -> bool:
-        return bool(self.speakers) and all(
+        return bool(self.watched_players) and all(
             (st := self.hass.states.get(s)) is not None and st.state not in _BAD_STATES
-            for s in self.speakers
+            for s in self.watched_players
         )
 
     def _fixed_phrase(self) -> str:
@@ -1436,11 +1457,21 @@ class AlertTTS:
         self, text: str, notify_on_failure: bool, mark: _Marks | None = None
     ) -> None:
         mark = mark or _Marks(None, None)
+        group = self.speaker_group
+        members = self.speakers or ([group] if group else [])
+        if members == [group]:
+            group = None  # the group is the only speaker: play on it directly
         ready, down = [], []
-        for entity_id in self.speakers:
+        for entity_id in members:
             state = self.hass.states.get(entity_id)
             bad = state is None or state.state in _BAD_STATES
             (down if bad else ready).append(entity_id)
+        group_state = self.hass.states.get(group) if group else None
+        group_ok = group_state is not None and group_state.state not in _BAD_STATES
+        if group and not group_ok:
+            _LOGGER.warning(
+                "Speaker group %s is unavailable; announcing on each speaker", group
+            )
         if down and notify_on_failure:
             await self._notify_fallback(
                 f"{text} (speaker unavailable: {', '.join(down)})"
@@ -1456,10 +1487,12 @@ class AlertTTS:
                 await self._notify_fallback(f"{text} (no text-to-speech engine)")
             return
 
-        before = {s: self.hass.states.get(s) for s in ready}
-        was_off = [s for s, st in before.items() if st and st.state == STATE_OFF]
+        initial = {s: self.hass.states.get(s) for s in ready}
+        was_off = [s for s, st in initial.items() if st and st.state == STATE_OFF]
         muted = [
-            s for s, st in before.items() if st and st.attributes.get("is_volume_muted")
+            s
+            for s, st in initial.items()
+            if st and st.attributes.get("is_volume_muted")
         ]
         previous: dict[str, float | None] = {}
         try:
@@ -1476,24 +1509,17 @@ class AlertTTS:
                     s,
                     volume_level=round(self.volume / 100, 2),
                 )
-            data: dict[str, Any] = {
-                "media_player_entity_id": ready,
-                "message": text,
-                "cache": True,
-            }
-            if language := self.options.get(CONF_TTS_LANGUAGE):
-                data["language"] = language
+            if group_ok and await self._speak_on_group(
+                group, tts_entity, text, mark
+            ):
+                mark.note("route", "group")
+                return
+            if group:
+                mark("group_fallback_ms")
+            mark.note("route", "group_fallback" if group else "speakers")
+            before = {s: self.hass.states.get(s) for s in ready}
             started = time.monotonic()
-            mark("tts_call_ms")
-            async with asyncio.timeout(TTS_TIMEOUT):
-                await self.hass.services.async_call(
-                    "tts",
-                    "speak",
-                    data,
-                    target={ATTR_ENTITY_ID: tts_entity},
-                    blocking=True,
-                )
-            mark("tts_done_ms")
+            await self._play(tts_entity, ready, text, mark)
             self.last_spoken = text
             await self._wait_for_playback(ready, before, text, started, mark)
         except Exception as err:  # noqa: BLE001
@@ -1510,6 +1536,58 @@ class AlertTTS:
                 await self._call("media_player", "volume_mute", s, is_volume_muted=True)
             for s in was_off:
                 await self._call("media_player", "turn_off", s)
+
+    async def _speak_on_group(
+        self, group: str, tts_entity: str, text: str, mark: _Marks
+    ) -> bool:
+        """Play on the speaker group (all speakers in sync).
+
+        Returns False if the group failed or didn't start playing in time, so
+        the caller announces on each speaker instead.
+        """
+        before = {group: self.hass.states.get(group)}
+        started = time.monotonic()
+        try:
+            await self._play(tts_entity, [group], text, mark)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Speaker group %s failed (%s); announcing on each speaker", group, err
+            )
+            return False
+        if not await self._wait_for_playback(
+            [group], before, text, started, mark, start_timeout=GROUP_START_TIMEOUT
+        ):
+            _LOGGER.warning(
+                "Speaker group %s didn't start playing within %s s; announcing on "
+                "each speaker",
+                group,
+                GROUP_START_TIMEOUT,
+            )
+            return False
+        self.last_spoken = text
+        return True
+
+    async def _play(
+        self, tts_entity: str, players: list[str], text: str, mark: _Marks
+    ) -> None:
+        """One text-to-speech call that plays on all `players` at once."""
+        data: dict[str, Any] = {
+            "media_player_entity_id": players,
+            "message": text,
+            "cache": True,
+        }
+        if language := self.options.get(CONF_TTS_LANGUAGE):
+            data["language"] = language
+        mark("tts_call_ms")
+        async with asyncio.timeout(TTS_TIMEOUT):
+            await self.hass.services.async_call(
+                "tts",
+                "speak",
+                data,
+                target={ATTR_ENTITY_ID: tts_entity},
+                blocking=True,
+            )
+        mark("tts_done_ms")
 
     async def _call(
         self, domain: str, service: str, entity_id: str, **data: Any
@@ -1550,9 +1628,16 @@ class AlertTTS:
         text: str,
         started: float,
         mark: _Marks | None = None,
-    ) -> None:
-        """Wait until our announcement has started and then finished."""
+        start_timeout: float | None = None,
+    ) -> bool:
+        """Wait until our announcement has started and then finished.
+
+        Returns False if it was never seen playing within `start_timeout`
+        (default PLAYBACK_START_TIMEOUT).
+        """
         mark = mark or _Marks(None, None)
+        if start_timeout is None:
+            start_timeout = PLAYBACK_START_TIMEOUT
 
         def ours_playing() -> bool:
             for s in speakers:
@@ -1568,17 +1653,18 @@ class AlertTTS:
             return False
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + PLAYBACK_START_TIMEOUT
+        deadline = loop.time() + start_timeout
         while not ours_playing() and loop.time() < deadline:
             await asyncio.sleep(0.25)
         if not ours_playing():
-            return  # never saw it play (or a speaker that doesn't report it)
+            return False  # never saw it play (or a speaker that doesn't report it)
         mark("playback_start_ms")
         # ~15 characters per second of speech, plus margin.
         deadline = loop.time() + max(PLAYBACK_END_TIMEOUT, len(text) / 12 + 20)
         while ours_playing() and loop.time() < deadline:
             await asyncio.sleep(0.25)
         mark("playback_end_ms")
+        return True
 
     # -- fallback notification ---------------------------------------------------
     async def _notify_fallback(self, message: str) -> None:

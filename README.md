@@ -209,9 +209,42 @@ The examples below use this sample alert:
 
 ### Speakers *(required)*
 
-The speakers to announce on. Pick one or more. They all speak at the same time.
-You can pick speaker groups (e.g. a Google Home speaker group) too.
+The speakers to announce on. Pick one or more. They are all asked to speak at
+the same time, but separate speakers each download and buffer the audio on
+their own, so they can start a second or so apart and sound like an echo. To
+keep them in step, also set a **Speaker group** (next option).
 Nothing is spoken until at least one speaker is chosen.
+
+### Speaker group (plays in sync) *(optional)*
+
+A speaker group makes all its speakers play **at exactly the same time**.
+Leave this empty to keep the normal behaviour (each speaker on its own).
+
+1. Create the group first. For Google / Nest speakers use the Google Home app
+   on your phone: **+ (Add) → Speaker group**, tick the speakers, name it and
+   save ([Google's guide](https://support.google.com/googlehome/answer/7174267)).
+   Home Assistant's [Google Cast](https://www.home-assistant.io/integrations/cast/)
+   integration finds the new group by itself within a minute or so; it shows up
+   as a `media_player` entity with the group's name (check under
+   **Settings → Devices & services → Entities**).
+2. In **Speakers**, pick the *individual* speakers that are in the group.
+   They are still used to set the announce volume (and put each speaker's own
+   volume back afterwards), and as the fallback below.
+3. In **Speaker group**, pick the group. Don't also add it to *Speakers* (the
+   form will tell you).
+
+How it works and its safety net:
+- The announcement plays on the group, so every speaker starts together.
+- If the group is **unavailable** (for example a speaker in it is offline;
+  Cast groups can disappear from Home Assistant then), the **text-to-speech
+  call fails**, or the group **doesn't start playing within 10 seconds**, the
+  alert is spoken on each speaker in *Speakers* instead, as without a group.
+  Emergency alerts use the same fallback. In the rare case the group starts
+  very late you may hear the alert twice; it is never skipped.
+- If you pick only a group and leave *Speakers* empty, the group is used like
+  a normal speaker (volume is set on the group, no fallback).
+- The history and **Last alert** *timings* show which way was used
+  (`route`, see [What is recorded](#what-is-recorded)).
 
 ### Text-to-speech engine *(required)*
 
@@ -870,6 +903,8 @@ Fired when alerts are acknowledged from Home Assistant.
 | *status* is `login_required` | Re-authenticate (see [section 13](#13-login-passwords-and-security)). |
 | *status* is `stopped` | Read **Settings → System → Repairs**. Usually the Desktop licence (30-day trial ended) or the device was deleted or logged in elsewhere. Fix it, then **⋮ → Reload** on the integration. |
 | Hears the fixed phrase instead of your regex / template | Run `push_alert_tts.preview` with *Use last alert* on: `outcome` says why (no match, too few parts filled, or too slow) and `groups` shows what each group captured. Check *Where the regex looks*. |
+| Speakers sound like an echo (start at different times) | Set a **Speaker group** ([section 6](#speaker-group-plays-in-sync-optional)). |
+| Speaker group set, but *timings* show `route: group_fallback` | The group was unavailable or didn't start in time. Check that every speaker in the group is online, and that the group's `media_player` entity isn't *unavailable*. Play something on the group from the Google Home app to test it. |
 | Speaker stays loud after an announcement | It couldn't report its volume before speaking. Set the volume once in the speaker's own app. |
 | Need help | Open an [issue](https://github.com/VibeOps-ZA/push-alert-tts/issues) and attach a diagnostics download (device page → ⋮ → Download diagnostics). Turn on debug logging via **⋮ → Enable debug logging**, reproduce, then turn it off to download the log. |
 
@@ -1085,6 +1120,8 @@ milliseconds after the alert reached Home Assistant unless noted:
 | `speak_start_ms` | Announcement started (after any announcement already playing) |
 | `tts_call_ms` / `tts_done_ms` | Text-to-speech asked / audio ready |
 | `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it) |
+| `group_fallback_ms` | The speaker group didn't play, so each speaker was used instead (only with a *Speaker group*) |
+| `route` | Not a time: `group` (played on the speaker group), `group_fallback` (group set but each speaker used) or `speakers` (no group set) |
 
 `ai_reason` values: `llm_unreachable`, `llm_unreachable_recently` (skipped
 for a minute after a failed connection), `llm_timeout`, `llm_http_error`,

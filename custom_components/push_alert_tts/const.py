@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -28,6 +28,7 @@ DEFAULT_DEVICE_NAME = "ha-alert-tts"
 
 # --- Options -----------------------------------------------------------------
 CONF_SPEAKERS = "speakers"
+CONF_SPEAKER_GROUP = "speaker_group"  # optional: plays on all speakers in sync
 CONF_TTS_ENTITY = "tts_entity"
 CONF_TTS_LANGUAGE = "tts_language"
 CONF_MESSAGE_MODE = "message_mode"
@@ -177,6 +178,7 @@ RETRY_MIN = 15  # Pushover asks clients to back off before reconnecting
 RETRY_MAX = 300
 WAKE_TIMEOUT = 3  # seconds to wait for a sleeping speaker to report its volume
 PLAYBACK_START_TIMEOUT = 15
+GROUP_START_TIMEOUT = 10  # speaker group must start playing within this, else fall back
 PLAYBACK_END_TIMEOUT = 60
 
 MESSAGE_FIELDS = (

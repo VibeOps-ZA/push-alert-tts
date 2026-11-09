@@ -5,6 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-09
+
+### Added
+- **Speaker group (plays in sync)** option. Set a speaker group (for example a Google Home speaker group) that
+  contains your speakers, and announcements play on the group so every speaker starts at the same time instead of
+  one after another. Volume is still set and restored on each speaker in *Speakers*. Empty (the default) keeps
+  today's behaviour.
+- Safe fallback: if the group is unavailable, the text-to-speech call fails or the group doesn't start playing
+  within 10 seconds, the alert is spoken on each speaker as before. Emergencies use the same fallback.
+- Timings record `route` (`group`, `group_fallback` or `speakers`) and `group_fallback_ms`.
+- The options form rejects picking the group in *Speakers* as well.
+
 ## [0.7.0] - 2026-11-08
 
 ### Added
