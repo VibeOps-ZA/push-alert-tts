@@ -5,6 +5,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-10
+
+### Added
+- **Backup text-to-speech engine** (optional). Retries use it, so a problem with the main voice service can't stop the
+  alert. Empty (the default) retries with the main voice, as before. *Language* applies to the main voice only.
+- **Connect the speaker group early** (default off). Connects the speaker group while the alert is being worded, so the
+  announcement starts about 3 seconds sooner. Off by default because some speakers play a connect sound.
+- While the Pushover connection is down, new alerts are also collected over the Pushover API every 30 seconds.
+- **Pushover connected** sensor: `drops`, `last_drop`, `last_drop_reason`, `polled_alerts`, `last_poll`,
+  `keepalive_interval_s` and `dead_after_s` attributes. Each drop is logged as a warning.
+- Timings record `prepared_ms`, `tts_used` and `group_preconnected`.
+
+### Changed
+- Speakers are woken while the alert is being worded (in the background), and volumes are set on all speakers at
+  once, so announcements start sooner. Speakers that were off are still switched off again afterwards.
+- A dead (silent) Pushover connection is found sooner: the keep-alive interval is measured and the connection counts
+  as dead after 2.5 times the longest recent gap (45 to 120 seconds; before, always 120), then it reconnects after
+  5 seconds instead of 15. When Pushover closes the connection it still waits 15 seconds, as Pushover asks.
+
 ## [0.9.1] - 2026-11-09
 
 ### Fixed

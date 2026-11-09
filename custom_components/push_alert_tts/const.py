@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.9.1"
+VERSION = "0.10.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -32,6 +32,8 @@ CONF_SPEAKER_GROUP = "speaker_group"  # optional: plays on all speakers in sync
 CONF_WAKE_WAIT = "wake_wait"  # seconds to wait for speakers (and group) to wake up
 CONF_ANNOUNCE_RETRIES = "announce_retries"  # re-announce if it failed or was cut short
 CONF_TTS_ENTITY = "tts_entity"
+CONF_TTS_BACKUP = "tts_backup_entity"  # optional: voice used for retries
+CONF_PRECONNECT_GROUP = "preconnect_group"  # connect the group while the AI words
 CONF_TTS_LANGUAGE = "tts_language"
 CONF_MESSAGE_MODE = "message_mode"
 CONF_FIXED_MESSAGE = "fixed_message"
@@ -174,9 +176,14 @@ EVENT_ALERT = f"{DOMAIN}_alert"
 EVENT_ACK = f"{DOMAIN}_acknowledged"
 SIGNAL_UPDATE = f"{DOMAIN}_update"
 
-KEEPALIVE_TIMEOUT = 120  # Pushover sends "#" roughly every 30 s
+KEEPALIVE_TIMEOUT = 120  # max wait for any frame (until the keep-alive gap is known)
+KEEPALIVE_MIN_TIMEOUT = 45  # never give up on the connection sooner than this
+KEEPALIVE_FACTOR = 2.5  # dead after this many of the longest keep-alive gaps seen
+KEEPALIVE_SAMPLES = 10  # recent keep-alive gaps remembered
 QUEUED_AGE = 120  # messages older than this when fetched count as queued
 RETRY_MIN = 15  # Pushover asks clients to back off before reconnecting
+RETRY_SILENT = 5  # first retry after the connection went silent (our own timeout)
+POLL_INTERVAL = 30  # while disconnected, check for alerts over the API this often
 RETRY_MAX = 300
 WAKE_TIMEOUT = 3  # seconds to wait for a sleeping speaker to report its volume
 PLAYBACK_START_TIMEOUT = 15
@@ -190,6 +197,7 @@ SPEECH_CHARS_PER_SECOND = 15  # rough speaking speed, to spot a cut-short announ
 SHORT_PLAY_FRACTION = 0.3  # played for less than this share of the expected time = cut
 SHORT_PLAY_MIN = 1.0  # ... or for less than this many seconds
 RETRY_PAUSE = 2  # seconds between a failed announcement and its retry
+PREPARE_MAX_AGE = 120  # seconds a speaker snapshot taken before the AI stays valid
 DEFAULT_WAKE_WAIT = 10
 MAX_WAKE_WAIT = 60
 DEFAULT_ANNOUNCE_RETRIES = 1

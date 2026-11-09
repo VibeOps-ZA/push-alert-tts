@@ -256,10 +256,27 @@ is up it speaks anyway, because playing the announcement wakes them too, so
 this can only delay an alert by this long, never stop it.
 Set **0** to not wait (the behaviour before version 0.9.0).
 
+Whatever this is set to, Push Alert TTS starts waking the speakers as soon as
+an alert arrives, while the alert is still being worded (since version
+0.10.0), so they are usually awake by the time it speaks. Speakers that were
+off are switched off again afterwards.
+
 The *Speaker group* is not waited for: a Google Cast speaker group only comes
 on once something is played on it, so waiting for it would only add delay
 (version 0.9.0 did that, adding the full wait time when the speakers had been
 off).
+
+### Connect the speaker group early *(default off)*
+
+Only used with a *Speaker group*. Connecting to a Google Cast speaker group
+takes about 3 seconds. With this on, Push Alert TTS connects the group as soon
+as an alert arrives, while the alert is still being worded (by the AI, if you
+use it), so the announcement starts about 3 seconds sooner.
+
+Some speakers (for example Google Nest speakers) play a short connect sound
+when the group is connected, so the sound comes a few seconds before the
+announcement. That's why it is off by default. Turn it on if you don't mind
+the sound, or your speakers don't make one.
 
 ### Retries if an announcement fails or is cut short *(default 1)*
 
@@ -286,6 +303,23 @@ hear every alert twice.
 
 The voice to use, e.g. `tts.google_en_com` or *Home Assistant
 Cloud*. See checklist item 4 if the list is empty.
+
+### Backup text-to-speech engine *(optional)*
+
+A second voice, used only when an announcement is retried (see *Retries*
+above), so a problem with the main voice service can't stop the alert. Pick a
+voice from a **different** service from the main one: two Google Translate
+voices (`tts.google_en_com` and `tts.google_en_co_za`) use the same service and
+fail together. A voice that runs on your own Home Assistant, such as
+[Piper](https://www.home-assistant.io/integrations/piper/) (installed via the
+[Wyoming protocol](https://www.home-assistant.io/integrations/wyoming/)),
+keeps working even when a cloud service is down. Other choices are
+[Home Assistant Cloud](https://www.home-assistant.io/integrations/cloud/) or
+[OpenAI](https://www.home-assistant.io/integrations/openai_conversation/).
+
+Leave empty to retry with the main voice. The *Language* setting below applies
+to the main voice only; the backup uses its own default language. If
+*Retries* is 0 the backup is never used.
 
 ### Language *(optional)*
 
@@ -539,6 +573,17 @@ How long (in seconds) the Pushover connection must be down, while the switch is
 on, before you're warned. Default `60`. Short drops are normal and reconnect
 automatically; alerts sent meanwhile are collected after reconnecting.
 
+How the connection is kept healthy (since version 0.10.0, nothing to set):
+- Pushover sends a small keep-alive signal every so often. Push Alert TTS
+  measures how often, and treats the connection as dead after 2.5 times the
+  longest recent gap (at least 45 and at most 120 seconds), then reconnects
+  after 5 seconds. When Pushover itself closes the connection it waits 15
+  seconds first, as Pushover asks.
+- While disconnected, it also checks Pushover for new alerts every 30
+  seconds, so alerts still arrive if only the live connection has trouble.
+- Each drop is logged as a warning and counted on the **Pushover connected**
+  sensor (see [section 9](#9-what-each-entity-does)).
+
 ### Keep alert history for
 
 How many days of received alerts to keep, `0`-`90`. Default `0` (off).
@@ -625,7 +670,7 @@ If you renamed anything, use the names shown on the device page instead.
 | **Repeat emergencies** `switch.push_alert_tts_repeat_emergencies` | Repeat *emergency-priority* alerts until acknowledged. |
 | **Acknowledge** `button.push_alert_tts_acknowledge` | Acknowledge pending emergency alerts and stop repeats ([section 12](#12-emergency-alerts-repeats-and-acknowledge)). |
 | **Test announcement** `button.push_alert_tts_test_announcement` | Speak the fixed phrase now. |
-| **Pushover connected** `binary_sensor.push_alert_tts_pushover_connected` | Connected / Disconnected. Its *status* attribute is `connected`, `reconnecting`, `login_required` or `stopped`, and *last_error* says why. |
+| **Pushover connected** `binary_sensor.push_alert_tts_pushover_connected` | Connected / Disconnected. Its *status* attribute is `connected`, `reconnecting`, `login_required` or `stopped`, and *last_error* says why. Since 0.10.0 also: *drops* (times a working connection dropped since Home Assistant started), *last_drop* / *last_drop_reason*, *polled_alerts* / *last_poll* (alerts collected while disconnected), *keepalive_interval_s* (longest recent gap between Pushover's keep-alives) and *dead_after_s* (silence after which it reconnects). |
 | **Last alert** `sensor.push_alert_tts_last_alert` | When the last alert arrived. Attributes: title, message, app, priority, count, queued, announced, spoken_text, pending_emergencies, and (since 0.5.0) spoken_source (`ai` or `filter`), filter_text, ai_text, ai_reason, ai_seconds and timings. |
 | **AI review** `sensor.push_alert_tts_ai_review` | How many alerts the AI looked at in the last 3 days. Its *alerts* attribute lists them, newest first: the alert as received, what was spoken, the AI's text and the reason if it wasn't used. Not saved in the recorder database. See [section 18](#18-ai-wording-with-a-local-llm-optional). |
 | **AI reachable** `binary_sensor.push_alert_tts_ai_reachable` | Connected / Disconnected: whether the main LLM server answers (unknown until first checked; unavailable while AI wording is off). Attributes: *unreachable_since*, *last_answer_from* (`main` or `backup`), *backup_set*, *backup_allowed_now*. |
@@ -942,6 +987,8 @@ Fired when alerts are acknowledged from Home Assistant.
 | Speakers sound like an echo (start at different times) | Set a **Speaker group** ([section 6](#speaker-group-plays-in-sync-optional)). |
 | Speaker group set, but *timings* show `route: group_fallback` | The group was unavailable or didn't start in time. Check that every speaker in the group is online, and that the group's `media_player` entity isn't *unavailable*. Play something on the group from the Google Home app to test it. |
 | Only the first word or two is heard | Update to 0.9.0 or later: before that, a speaker briefly showing *buffering* was taken as the end of the announcement and a speaker that had been off was switched off again mid-sentence. Check *timings*: `played_s` should be a few seconds and `outcome` `ok`. |
+| Alerts sometimes arrive late | Check the **Pushover connected** sensor's *drops*, *last_drop* and *last_drop_reason*: a dropped connection explains a delay of up to a minute or two. If *drops* stays 0, the delay is before Pushover (for example e-mail delivery). |
+| A short sound plays before announcements | That's the speaker group connecting early. Turn off *Connect the speaker group early*. |
 | Every alert is heard twice | Your speaker probably doesn't report *playing*. Set **Retries** to 0 ([section 6](#retries-if-an-announcement-fails-or-is-cut-short-default-1)). |
 | Speaker stays loud after an announcement | It couldn't report its volume before speaking. Set the volume once in the speaker's own app. |
 | Need help | Open an [issue](https://github.com/VibeOps-ZA/push-alert-tts/issues) and attach a diagnostics download (device page → ⋮ → Download diagnostics). Turn on debug logging via **⋮ → Enable debug logging**, reproduce, then turn it off to download the log. |
@@ -1162,6 +1209,9 @@ milliseconds after the alert reached Home Assistant unless noted:
 | `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it). Finished means stopped for at least 2 seconds; *buffering* counts as playing |
 | `played_s` | Not a time after the alert: seconds the speaker was seen playing |
 | `retry_ms` | The last retry started (only when one was needed) |
+| `tts_used` | Not a time: `backup` when a retry used the *Backup text-to-speech engine* |
+| `prepared_ms` | The speakers were woken early, while the alert was being worded |
+| `group_preconnected` | Not a time: `true` when the speaker group was connected early (*Connect the speaker group early*) |
 | `attempts` / `retry_reason` / `outcome` | Not times: how many tries; why the last retry was needed; how the last try went: `ok`, `cut_short`, `not_started` or `failed` |
 | `group_fallback_ms` | The speaker group didn't play, so each speaker was used instead (only with a *Speaker group*) |
 | `route` | Not a time: `group` (played on the speaker group), `group_fallback` (group set but each speaker used) or `speakers` (no group set) |

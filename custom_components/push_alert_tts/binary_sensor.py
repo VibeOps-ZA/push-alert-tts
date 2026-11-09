@@ -40,7 +40,17 @@ class ConnectedSensor(AlertTTSEntity, BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         listener = self.runtime.listener
-        return {"status": listener.status, "last_error": listener.last_error}
+        return {
+            "status": listener.status,
+            "last_error": listener.last_error,
+            "drops": listener.drops,
+            "last_drop": listener.last_drop,
+            "last_drop_reason": listener.last_drop_reason,
+            "polled_alerts": listener.polled_alerts,
+            "last_poll": listener.last_poll,
+            "keepalive_interval_s": listener.keepalive_interval,
+            "dead_after_s": listener.keepalive_timeout,
+        }
 
 
 class AIReachableSensor(AlertTTSEntity, BinarySensorEntity):

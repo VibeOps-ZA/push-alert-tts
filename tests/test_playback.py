@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import patch
 
@@ -11,7 +12,10 @@ from pytest_homeassistant_custom_component.common import async_mock_service
 
 from custom_components.push_alert_tts.const import (
     CONF_ANNOUNCE_RETRIES,
+    CONF_PRECONNECT_GROUP,
     CONF_SPEAKER_GROUP,
+    CONF_TTS_BACKUP,
+    CONF_TTS_LANGUAGE,
     CONF_WAKE_WAIT,
 )
 
@@ -283,3 +287,134 @@ async def test_wake_wait_off_does_not_wait(
     await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
     assert "awake_ms" not in timings and "awake_timeout" not in timings
     assert timings["tts_call_ms"] < 500
+
+
+async def test_retry_uses_backup_voice(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    _states(hass)
+    calls = _tts(hass, [CUT, GOOD])
+    async_mock_service(hass, "media_player", "volume_set")
+    runtime = await _setup(
+        hass,
+        mock_entry,
+        **{
+            CONF_ANNOUNCE_RETRIES: 1,
+            CONF_TTS_BACKUP: "tts.backup",
+            CONF_TTS_LANGUAGE: "en-ZA",
+        },
+    )
+    timings: dict = {}
+    await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
+    assert [c.data["entity_id"] for c in calls] == ["tts.test", "tts.backup"]
+    assert calls[0].data["language"] == "en-ZA"
+    assert "language" not in calls[1].data  # the language is for the main voice
+    assert timings["tts_used"] == "backup"
+    assert timings["outcome"] == "ok"
+
+
+def _sleepy_speakers(hass: HomeAssistant):
+    """Speakers that are off (no volume) until turned on; record turn_on/off."""
+    hass.states.async_set("media_player.bedroom", "off", {})
+    hass.states.async_set("media_player.kitchen", "off", {})
+    hass.states.async_set(GROUP, "off", {})
+    on: list[str] = []
+    off: list[str] = []
+
+    def ids(call: ServiceCall) -> list[str]:
+        e = call.data["entity_id"]
+        return [e] if isinstance(e, str) else list(e)
+
+    async def turn_on(call: ServiceCall) -> None:
+        for e in ids(call):
+            on.append(e)
+            hass.states.async_set(e, "idle", {"volume_level": 0.4})
+
+    async def turn_off(call: ServiceCall) -> None:
+        for e in ids(call):
+            off.append(e)
+            hass.states.async_set(e, "off", {})
+
+    hass.services.async_register("media_player", "turn_on", turn_on)
+    hass.services.async_register("media_player", "turn_off", turn_off)
+    return on, off
+
+
+def _alert() -> dict:
+    return {
+        "id_str": "1",
+        "umid_str": "u1",
+        "title": "T",
+        "message": "M",
+        "app": "Datadog",
+        "priority": 1,
+        "date": int(time.time()),
+    }
+
+
+async def test_speakers_woken_before_speaking_and_put_back(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    on, off = _sleepy_speakers(hass)
+    _tts(hass, [GOOD])
+    async_mock_service(hass, "media_player", "volume_set")
+    runtime = await _setup(hass, mock_entry)
+    runtime.enabled = True
+    await runtime._on_alerts([_alert()], False)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    timings = runtime.last_alert["timings"]
+    assert "prepared_ms" in timings
+    assert set(on) >= set(MEMBERS)
+    assert GROUP not in on  # pre-connecting the group is off by default
+    assert set(off) == set(MEMBERS)  # they were off before, so off again after
+    assert timings["outcome"] == "ok"
+
+
+async def test_preconnect_group_when_chosen(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    on, _off = _sleepy_speakers(hass)
+    _tts(hass, [GOOD])
+    async_mock_service(hass, "media_player", "volume_set")
+    runtime = await _setup(hass, mock_entry, **{CONF_PRECONNECT_GROUP: True})
+    runtime.enabled = True
+    ai_calls = []
+
+    async def slow_ai(*args, **kwargs):
+        ai_calls.append(list(on))  # what was switched on while the AI worked
+        await asyncio.sleep(0.3)
+
+    with patch.object(runtime, "ai_wording", side_effect=slow_ai):
+        await runtime._on_alerts([_alert()], False)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert GROUP in on
+    assert runtime.last_alert["timings"]["group_preconnected"] is True
+
+
+async def test_not_prepared_when_switched_off(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    on, _off = _sleepy_speakers(hass)
+    calls = _tts(hass, [GOOD])
+    runtime = await _setup(hass, mock_entry)
+    runtime.enabled = False
+    await runtime._on_alerts([_alert()], False)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert not on and not calls
+
+
+async def test_second_alert_keeps_first_snapshot(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    """Two alerts close together: speakers that were off are still put back off."""
+    _on, off = _sleepy_speakers(hass)
+    _tts(hass, [GOOD])
+    async_mock_service(hass, "media_player", "volume_set")
+    runtime = await _setup(hass, mock_entry)
+    runtime.enabled = True
+    runtime._prepare({}, time.monotonic())
+    await hass.async_block_till_done(wait_background_tasks=True)
+    runtime._prepare({}, time.monotonic())  # speakers now awake; keep the first
+    await runtime.speak(TEXT)
+    assert set(off) == set(MEMBERS)

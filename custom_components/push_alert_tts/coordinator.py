@@ -82,10 +82,12 @@ from .const import (
     CONF_HISTORY_DAYS,
     CONF_MESSAGE_MODE,
     CONF_OFFLINE_ALERT_DELAY,
+    CONF_PRECONNECT_GROUP,
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
     CONF_SPEAKER_GROUP,
     CONF_SPEAKERS,
+    CONF_TTS_BACKUP,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
     CONF_WAKE_WAIT,
@@ -123,6 +125,7 @@ from .const import (
     PLAYBACK_END_GRACE,
     PLAYBACK_END_TIMEOUT,
     PLAYBACK_START_TIMEOUT,
+    PREPARE_MAX_AGE,
     RETRY_PAUSE,
     SHORT_PLAY_FRACTION,
     SHORT_PLAY_MIN,
@@ -405,6 +408,8 @@ class AlertTTS:
         self.last_spoken: str | None = None
         self._receipts: dict[str, float] = {}  # receipt -> expiry (epoch)
         self._speak_lock = asyncio.Lock()
+        # Speaker states taken before they were woken early (see _prepare).
+        self._prepared: tuple[float, dict[str, Any]] | None = None
         self._repeat_task: asyncio.Task | None = None
         self._ack_event = asyncio.Event()
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -860,6 +865,9 @@ class AlertTTS:
         filter_text = spoken["text"] if spoken else None
         timings["text_ms"] = _ms_since(t0)
         emergency = any(api.as_int(m.get("priority")) >= 2 for m in wanted)
+        if wanted and enabled:
+            # Wake the speakers while the AI words the alert.
+            self._prepare(timings, t0)
         ai = await self.ai_wording(wanted, spoken, emergency) if wanted else None
         if ai is not None:
             timings["ai_done_ms"] = _ms_since(t0)
@@ -1525,6 +1533,10 @@ class AlertTTS:
             return
 
         initial = {s: self.hass.states.get(s) for s in ready}
+        prepared, self._prepared = self._prepared, None
+        if prepared and time.monotonic() - prepared[0] < PREPARE_MAX_AGE:
+            # Woken early: what they were before that decides what to restore.
+            initial.update({s: st for s, st in prepared[1].items() if s in initial})
         was_off = [s for s, st in initial.items() if st and st.state == STATE_OFF]
         muted = [
             s
@@ -1535,17 +1547,21 @@ class AlertTTS:
         try:
             levels = await asyncio.gather(*(self._wake(s) for s in ready))
             previous = dict(zip(ready, levels, strict=True))
-            for s in muted:
-                await self._call(
-                    "media_player", "volume_mute", s, is_volume_muted=False
-                )
-            for s in ready:
-                await self._call(
-                    "media_player",
-                    "volume_set",
-                    s,
-                    volume_level=round(self.volume / 100, 2),
-                )
+            await asyncio.gather(
+                *(
+                    self._call("media_player", "volume_mute", s, is_volume_muted=False)
+                    for s in muted
+                ),
+                *(
+                    self._call(
+                        "media_player",
+                        "volume_set",
+                        s,
+                        volume_level=round(self.volume / 100, 2),
+                    )
+                    for s in ready
+                ),
+            )
             # Only the speakers: a Cast speaker group comes up only once
             # something is played on it, so waiting for it would just add delay.
             await self._wait_awake(ready, mark)
@@ -1563,8 +1579,11 @@ class AlertTTS:
                 await asyncio.sleep(RETRY_PAUSE)
                 tries += 1
                 mark("retry_ms")
+                retry_tts = self.options.get(CONF_TTS_BACKUP) or tts_entity
+                if retry_tts != tts_entity:
+                    mark.note("tts_used", "backup")
                 outcome = await self._attempt(
-                    group, group_ok, tts_entity, ready, text, mark
+                    group, group_ok, retry_tts, ready, text, mark
                 )
             mark.note("attempts", tries)
             mark.note("outcome", outcome)
@@ -1593,6 +1612,60 @@ class AlertTTS:
                 await self._call("media_player", "volume_mute", s, is_volume_muted=True)
             for s in was_off:
                 await self._call("media_player", "turn_off", s)
+
+    def _prepare(self, timings: dict[str, Any], t0: float) -> None:
+        """Wake the speakers (and, if chosen, connect the group) in the background.
+
+        Runs while the AI words the alert, so the announcement can start
+        sooner. Their states are taken first, so speakers that were off are
+        still switched off again afterwards. Skipped while another
+        announcement is playing. Never raises.
+        """
+        if self._speak_lock.locked():
+            return
+        group = self.speaker_group
+        speakers = [
+            s
+            for s in self.speakers
+            if (st := self.hass.states.get(s)) is not None
+            and st.state not in _BAD_STATES
+        ]
+        if not speakers:
+            return
+        if not (
+            self._prepared and time.monotonic() - self._prepared[0] < PREPARE_MAX_AGE
+        ):
+            # Keep an earlier snapshot not yet used: it still shows what the
+            # speakers were before the first of these alerts woke them.
+            self._prepared = (
+                time.monotonic(),
+                {s: self.hass.states.get(s) for s in speakers},
+            )
+        mark = _Marks(timings, t0)
+
+        state = self.hass.states.get(group) if group else None
+        preconnect = bool(
+            group
+            and self.options.get(CONF_PRECONNECT_GROUP)
+            and state is not None
+            and state.state == STATE_OFF
+        )
+
+        async def _run() -> None:
+            try:
+                jobs = [self._wake(s) for s in speakers]
+                if preconnect:
+                    # Connecting the group also wakes its speakers.
+                    jobs.append(self._call("media_player", "turn_on", group))
+                    mark.note("group_preconnected", True)
+                await asyncio.gather(*jobs)
+                mark("prepared_ms")
+            except Exception:  # noqa: BLE001 - speaking still wakes them
+                _LOGGER.debug("Waking the speakers early failed", exc_info=True)
+
+        self.entry.async_create_background_task(
+            self.hass, _run(), f"{DOMAIN}_prepare"
+        )
 
     async def _attempt(
         self,
@@ -1701,8 +1774,9 @@ class AlertTTS:
             "message": text,
             "cache": True,
         }
-        if language := self.options.get(CONF_TTS_LANGUAGE):
-            data["language"] = language
+        language = self.options.get(CONF_TTS_LANGUAGE)
+        if language and tts_entity == self.options.get(CONF_TTS_ENTITY):
+            data["language"] = language  # the language is set for the main voice
         mark("tts_call_ms")
         async with asyncio.timeout(TTS_TIMEOUT):
             await self.hass.services.async_call(

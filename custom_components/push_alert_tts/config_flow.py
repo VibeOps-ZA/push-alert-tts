@@ -78,6 +78,7 @@ from .const import (
     CONF_MULTIPLE_MESSAGE,
     CONF_OFFLINE_ALERT_DELAY,
     CONF_PART_MAX_LENGTH,
+    CONF_PRECONNECT_GROUP,
     CONF_REGEX,
     CONF_REGEX_SOURCE,
     CONF_REMOVE_REPEATS,
@@ -89,6 +90,7 @@ from .const import (
     CONF_SPOKEN_TEMPLATE,
     CONF_STORE_PASSWORD,
     CONF_TIDY_TEXT,
+    CONF_TTS_BACKUP,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
     CONF_TWOFA,
@@ -423,6 +425,9 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                     description={"suggested_value": current.get(CONF_SPEAKER_GROUP)},
                 ): EntitySelector(EntitySelectorConfig(domain="media_player")),
                 vol.Optional(
+                    CONF_PRECONNECT_GROUP, default=opt(CONF_PRECONNECT_GROUP, False)
+                ): BooleanSelector(),
+                vol.Optional(
                     CONF_WAKE_WAIT, default=opt(CONF_WAKE_WAIT, DEFAULT_WAKE_WAIT)
                 ): NumberSelector(
                     NumberSelectorConfig(
@@ -447,6 +452,10 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_TTS_ENTITY,
                     description={"suggested_value": current.get(CONF_TTS_ENTITY)},
+                ): EntitySelector(EntitySelectorConfig(domain="tts")),
+                vol.Optional(
+                    CONF_TTS_BACKUP,
+                    description={"suggested_value": current.get(CONF_TTS_BACKUP)},
                 ): EntitySelector(EntitySelectorConfig(domain="tts")),
                 vol.Optional(
                     CONF_TTS_LANGUAGE,

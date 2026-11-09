@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 
 import aiohttp
@@ -12,15 +14,21 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from . import api
 from .const import (
     CONF_DEVICE_ID,
     CONF_SECRET,
+    KEEPALIVE_FACTOR,
+    KEEPALIVE_MIN_TIMEOUT,
+    KEEPALIVE_SAMPLES,
     KEEPALIVE_TIMEOUT,
+    POLL_INTERVAL,
     QUEUED_AGE,
     RETRY_MAX,
     RETRY_MIN,
+    RETRY_SILENT,
     WS_URL,
 )
 
@@ -83,6 +91,33 @@ class PushoverListener:
         self._sync_lock = asyncio.Lock()
         self._last_relogin: float | None = None
         self._renewed = False
+        # Connection history, shown on the Pushover connected sensor.
+        self.drops = 0  # times a working connection dropped since start-up
+        self.last_drop: str | None = None  # ISO time of the last drop
+        self.last_drop_reason: str | None = None
+        self.polled_alerts = 0  # alerts collected by polling while disconnected
+        self.last_poll: str | None = None  # ISO time of the last poll while down
+        # Gaps (s) between Pushover's frames, to spot a dead connection sooner.
+        self._gaps: deque[float] = deque(maxlen=KEEPALIVE_SAMPLES)
+
+    @property
+    def keepalive_timeout(self) -> float:
+        """Seconds without any frame before the connection counts as dead.
+
+        Pushover doesn't publish its keep-alive interval, so it is measured:
+        KEEPALIVE_FACTOR times the longest recent gap, between
+        KEEPALIVE_MIN_TIMEOUT and KEEPALIVE_TIMEOUT. Until three gaps are
+        known it waits the full KEEPALIVE_TIMEOUT.
+        """
+        if len(self._gaps) < 3:
+            return KEEPALIVE_TIMEOUT
+        wanted = max(self._gaps) * KEEPALIVE_FACTOR
+        return round(max(KEEPALIVE_MIN_TIMEOUT, min(wanted, KEEPALIVE_TIMEOUT)), 1)
+
+    @property
+    def keepalive_interval(self) -> float | None:
+        """Longest recent gap between Pushover's frames (seconds), if known."""
+        return round(max(self._gaps), 1) if self._gaps else None
 
     # -- helpers ---------------------------------------------------------------
     @property
@@ -104,10 +139,25 @@ class PushoverListener:
 
     # -- main loop ---------------------------------------------------------------
     async def run(self) -> None:
-        """Connect, listen and reconnect with back-off."""
+        """Connect, listen and reconnect with back-off.
+
+        While disconnected, alerts are also collected over the API every
+        POLL_INTERVAL seconds, so they arrive even if only the live
+        connection has trouble.
+        """
+        poller = asyncio.create_task(self._poll_while_down())
+        try:
+            await self._run()
+        finally:
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
+
+    async def _run(self) -> None:
         delay = RETRY_MIN
         while True:
             was_connected = False
+            silent = False
             try:
                 await self._listen_once()
             except asyncio.CancelledError:
@@ -128,10 +178,9 @@ class PushoverListener:
                 _LOGGER.info("Pushover connection reconnecting: %s", err)
             except TimeoutError:
                 was_connected = self.connected
-                self.last_error = "no keep-alive from Pushover"
-                _LOGGER.warning(
-                    "No keep-alive from Pushover for %ss, reconnecting",
-                    KEEPALIVE_TIMEOUT,
+                silent = True
+                self.last_error = (
+                    f"no keep-alive from Pushover for {self.keepalive_timeout} s"
                 )
             except Exception as err:  # noqa: BLE001 - network, DNS, 5xx, ...
                 was_connected = self.connected
@@ -139,11 +188,42 @@ class PushoverListener:
                 _LOGGER.warning("Pushover connection error: %s", self.last_error)
 
             if was_connected:
-                delay = RETRY_MIN  # a healthy connection dropped; start over
+                # A working connection dropped; start the back-off over. When it
+                # went silent (we gave up on it, not Pushover) retry sooner.
+                delay = RETRY_SILENT if silent else RETRY_MIN
+                self.drops += 1
+                self.last_drop = dt_util.utcnow().isoformat(timespec="seconds")
+                self.last_drop_reason = self.last_error
+                _LOGGER.warning(
+                    "Pushover connection dropped (%s); reconnecting in %s s",
+                    self.last_error,
+                    delay,
+                )
             if self.status not in (STATUS_LOGIN_REQUIRED, STATUS_STOPPED):
                 self._set_status(STATUS_RECONNECTING)
             await asyncio.sleep(delay)
             delay = min(delay * 2, RETRY_MAX)
+
+    async def _poll_while_down(self) -> None:
+        """While reconnecting, collect alerts over the API now and then."""
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+            if self.status != STATUS_RECONNECTING:
+                continue
+            self.last_poll = dt_util.utcnow().isoformat(timespec="seconds")
+            try:
+                found = await self.sync(startup=False, relogin=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001 - try again next time
+                _LOGGER.debug("Polling Pushover while disconnected failed: %s", err)
+                continue
+            if found:
+                self.polled_alerts += found
+                _LOGGER.warning(
+                    "Collected %s alert(s) from Pushover while disconnected", found
+                )
+            self._on_status()
 
     async def _listen_once(self) -> None:
         async with self.session.ws_connect(WS_URL, headers=api.HEADERS) as ws:
@@ -152,8 +232,13 @@ class PushoverListener:
             await self._sync_and_check(startup=True)
             self.last_error = self.stop_reason = None
             self._set_status(STATUS_CONNECTED)
+            last_frame: float | None = None
             while True:
-                msg = await asyncio.wait_for(ws.receive(), KEEPALIVE_TIMEOUT)
+                msg = await asyncio.wait_for(ws.receive(), self.keepalive_timeout)
+                now = time.monotonic()
+                if last_frame is not None:
+                    self._gaps.append(now - last_frame)
+                last_frame = now
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     frames = msg.data.decode("ascii", "ignore")
                 elif msg.type == aiohttp.WSMsgType.TEXT:
@@ -220,20 +305,26 @@ class PushoverListener:
         )
 
     # -- sync --------------------------------------------------------------------
-    async def sync(self, startup: bool) -> None:
-        """Download pending messages, hand them over, then delete them."""
+    async def sync(self, startup: bool, relogin: bool = True) -> int:
+        """Download pending messages, hand them over, then delete them.
+
+        Returns how many new alerts were handed over. With relogin=False a
+        rejected session is raised instead of logging in again (polling).
+        """
         async with self._sync_lock:
             try:
                 messages = await api.async_fetch_messages(
                     self.session, self.secret, self.device_id
                 )
             except api.SessionInvalid:
+                if not relogin:
+                    raise
                 await self._handle_session_error("Pushover rejected the session")
                 messages = await api.async_fetch_messages(
                     self.session, self.secret, self.device_id
                 )
             if not messages:
-                return
+                return 0
             messages.sort(key=api.message_id)
             highest = api.message_id(messages[-1])
             new = [m for m in messages if api.message_id(m) > self._highest_handled]
@@ -249,6 +340,7 @@ class PushoverListener:
             await api.async_delete_through(
                 self.session, self.secret, self.device_id, highest
             )
+            return len(new)
 
     async def acknowledge(self, receipt: str) -> None:
         await api.async_acknowledge(self.session, self.secret, receipt)
