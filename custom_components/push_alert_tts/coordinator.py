@@ -76,6 +76,7 @@ from .const import (
     CONF_AI_TIMEOUT,
     CONF_AI_URL,
     CONF_AI_WAKE_ENTITY,
+    CONF_ANNOUNCE_RETRIES,
     CONF_EMERGENCY_MESSAGE,
     CONF_FALLBACK_NOTIFY,
     CONF_HISTORY_DAYS,
@@ -87,17 +88,20 @@ from .const import (
     CONF_SPEAKERS,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
+    CONF_WAKE_WAIT,
     DEFAULT_AI_AUTO_BACKFILL,
     DEFAULT_AI_EMERGENCY_TIMEOUT,
     DEFAULT_AI_MAX_WORDS,
     DEFAULT_AI_OFFLINE_ALERT,
     DEFAULT_AI_TIMEOUT,
+    DEFAULT_ANNOUNCE_RETRIES,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_OFFLINE_ALERT_DELAY,
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
     DEFAULT_VOLUME,
+    DEFAULT_WAKE_WAIT,
     DOMAIN,
     EVENT_ACK,
     EVENT_ALERT,
@@ -108,14 +112,22 @@ from .const import (
     MAX_AI_GPU_LAYERS,
     MAX_AI_OFFLINE_ALERT,
     MAX_AI_TIMEOUT,
+    MAX_ANNOUNCE_RETRIES,
     MAX_HISTORY_DAYS,
     MAX_MESSAGE_INPUT,
     MAX_TITLE_INPUT,
+    MAX_WAKE_WAIT,
     MESSAGE_FIELDS,
     MODE_REGEX,
+    PLAYBACK_ACTIVE_STATES,
+    PLAYBACK_END_GRACE,
     PLAYBACK_END_TIMEOUT,
     PLAYBACK_START_TIMEOUT,
+    RETRY_PAUSE,
+    SHORT_PLAY_FRACTION,
+    SHORT_PLAY_MIN,
     SIGNAL_UPDATE,
+    SPEECH_CHARS_PER_SECOND,
     TEXT_TIMEOUT,
     WAKE_TIMEOUT,
 )
@@ -132,6 +144,17 @@ from .spoken import (
 
 SOURCE_AI = "ai"
 SOURCE_FILTER = "filter"  # the normal (non-AI) spoken text
+
+# How one announcement attempt went.
+PLAY_OK = "ok"
+PLAY_SHORT = "cut_short"  # started, then stopped far sooner than the text needs
+PLAY_NOT_STARTED = "not_started"  # never seen playing
+PLAY_FAILED = "failed"  # the text-to-speech call failed
+_PLAY_PROBLEM = {
+    PLAY_SHORT: "announcement was cut short",
+    PLAY_NOT_STARTED: "announcement never started playing",
+    PLAY_FAILED: "speaker announcement failed",
+}
 
 _LOGGER = logging.getLogger(__name__)
 _BAD_STATES = (STATE_UNAVAILABLE, STATE_UNKNOWN, None)
@@ -427,6 +450,20 @@ class AlertTTS:
     def speaker_group(self) -> str | None:
         """The speaker group that plays all speakers in sync (None = not used)."""
         return self.options.get(CONF_SPEAKER_GROUP) or None
+
+    @property
+    def wake_wait(self) -> int:
+        """Seconds to wait for speakers (and the group) to be awake (0 = off)."""
+        value = api.as_int(self.options.get(CONF_WAKE_WAIT, DEFAULT_WAKE_WAIT))
+        return max(0, min(value, MAX_WAKE_WAIT))
+
+    @property
+    def announce_retries(self) -> int:
+        """Extra tries when an announcement fails or is cut short (0 = off)."""
+        value = api.as_int(
+            self.options.get(CONF_ANNOUNCE_RETRIES, DEFAULT_ANNOUNCE_RETRIES)
+        )
+        return max(0, min(value, MAX_ANNOUNCE_RETRIES))
 
     @property
     def watched_players(self) -> list[str]:
@@ -1509,19 +1546,37 @@ class AlertTTS:
                     s,
                     volume_level=round(self.volume / 100, 2),
                 )
-            if group_ok and await self._speak_on_group(
-                group, tts_entity, text, mark
-            ):
-                mark.note("route", "group")
-                return
-            if group:
-                mark("group_fallback_ms")
-            mark.note("route", "group_fallback" if group else "speakers")
-            before = {s: self.hass.states.get(s) for s in ready}
-            started = time.monotonic()
-            await self._play(tts_entity, ready, text, mark)
-            self.last_spoken = text
-            await self._wait_for_playback(ready, before, text, started, mark)
+            await self._wait_awake([*ready, *([group] if group_ok else [])], mark)
+            outcome = await self._attempt(group, group_ok, tts_entity, ready, text, mark)
+            tries = 1
+            while outcome != PLAY_OK and tries <= self.announce_retries:
+                _LOGGER.warning(
+                    "Announcement %s; trying again (%s of %s): %s",
+                    _PLAY_PROBLEM[outcome],
+                    tries,
+                    self.announce_retries,
+                    text,
+                )
+                mark.note("retry_reason", outcome)
+                await asyncio.sleep(RETRY_PAUSE)
+                tries += 1
+                mark("retry_ms")
+                outcome = await self._attempt(
+                    group, group_ok, tts_entity, ready, text, mark
+                )
+            mark.note("attempts", tries)
+            mark.note("outcome", outcome)
+            # Retries off: only a failed call warns, as before retries existed.
+            report = outcome == PLAY_FAILED or self.announce_retries > 0
+            if outcome != PLAY_OK and report:
+                _LOGGER.error(
+                    "Announcement %s after %s tries: %s",
+                    _PLAY_PROBLEM[outcome],
+                    tries,
+                    text,
+                )
+                if notify_on_failure:
+                    await self._notify_fallback(f"{text} ({_PLAY_PROBLEM[outcome]})")
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Announcement failed: %s", err)
             if notify_on_failure:
@@ -1537,13 +1592,80 @@ class AlertTTS:
             for s in was_off:
                 await self._call("media_player", "turn_off", s)
 
+    async def _attempt(
+        self,
+        group: str | None,
+        group_ok: bool,
+        tts_entity: str,
+        ready: list[str],
+        text: str,
+        mark: _Marks,
+    ) -> str:
+        """One try: the speaker group if set, else (or if it fails) each speaker."""
+        if group and group_ok:
+            outcome = await self._speak_on_group(group, tts_entity, text, mark)
+            if outcome in (PLAY_OK, PLAY_SHORT):
+                # Cut short on the group: the retry uses the group again.
+                mark.note("route", "group")
+                return outcome
+            mark("group_fallback_ms")
+        mark.note("route", "group_fallback" if group else "speakers")
+        before = {s: self.hass.states.get(s) for s in ready}
+        started = time.monotonic()
+        try:
+            await self._play(tts_entity, ready, text, mark)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Announcement failed: %s", err)
+            return PLAY_FAILED
+        self.last_spoken = text
+        return await self._wait_for_playback(ready, before, text, started, mark)
+
+    async def _wait_awake(self, players: list[str], mark: _Marks) -> None:
+        """Wait (up to the wake-up time) until every player is on and stays on.
+
+        Speakers that were off come up one by one, and a speaker group only
+        wakes after its members; playing before that can lose the start. When
+        the time is up it carries on anyway: the announcement wakes them too.
+        """
+        limit = self.wake_wait
+        if not limit or not players:
+            return
+
+        def awake() -> bool:
+            return all(
+                (st := self.hass.states.get(p)) is not None
+                and st.state not in (*_BAD_STATES, STATE_OFF)
+                for p in players
+            )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + limit
+        steady = 0
+        while loop.time() < deadline:
+            steady = steady + 1 if awake() else 0
+            if steady >= 2:  # awake on two checks in a row
+                mark("awake_ms")
+                return
+            await asyncio.sleep(0.25)
+        mark.note("awake_timeout", True)
+        _LOGGER.info(
+            "Speakers not all awake within %s s; announcing anyway: %s",
+            limit,
+            [
+                p
+                for p in players
+                if (st := self.hass.states.get(p)) is None
+                or st.state in (*_BAD_STATES, STATE_OFF)
+            ],
+        )
+
     async def _speak_on_group(
         self, group: str, tts_entity: str, text: str, mark: _Marks
-    ) -> bool:
+    ) -> str:
         """Play on the speaker group (all speakers in sync).
 
-        Returns False if the group failed or didn't start playing in time, so
-        the caller announces on each speaker instead.
+        Returns PLAY_NOT_STARTED or PLAY_FAILED if the group failed or didn't
+        start playing in time, so the caller announces on each speaker instead.
         """
         before = {group: self.hass.states.get(group)}
         started = time.monotonic()
@@ -1553,19 +1675,20 @@ class AlertTTS:
             _LOGGER.warning(
                 "Speaker group %s failed (%s); announcing on each speaker", group, err
             )
-            return False
-        if not await self._wait_for_playback(
+            return PLAY_FAILED
+        outcome = await self._wait_for_playback(
             [group], before, text, started, mark, start_timeout=GROUP_START_TIMEOUT
-        ):
+        )
+        if outcome == PLAY_NOT_STARTED:
             _LOGGER.warning(
                 "Speaker group %s didn't start playing within %s s; announcing on "
                 "each speaker",
                 group,
                 GROUP_START_TIMEOUT,
             )
-            return False
+            return outcome
         self.last_spoken = text
-        return True
+        return outcome
 
     async def _play(
         self, tts_entity: str, players: list[str], text: str, mark: _Marks
@@ -1629,42 +1752,82 @@ class AlertTTS:
         started: float,
         mark: _Marks | None = None,
         start_timeout: float | None = None,
-    ) -> bool:
+    ) -> str:
         """Wait until our announcement has started and then finished.
 
-        Returns False if it was never seen playing within `start_timeout`
-        (default PLAYBACK_START_TIMEOUT).
+        Returns PLAY_NOT_STARTED if it was never seen playing within
+        `start_timeout` (default PLAYBACK_START_TIMEOUT), PLAY_SHORT if it
+        stopped far sooner than the text needs, else PLAY_OK. "buffering" counts
+        as still playing, and it only counts as finished once every speaker has
+        stayed stopped for PLAYBACK_END_GRACE seconds.
         """
         mark = mark or _Marks(None, None)
         if start_timeout is None:
             start_timeout = PLAYBACK_START_TIMEOUT
 
-        def ours_playing() -> bool:
-            for s in speakers:
-                st = self.hass.states.get(s)
-                if st is None or st.state != STATE_PLAYING:
-                    continue
-                old = before.get(s)
-                old_id = old.attributes.get("media_content_id") if old else None
-                if st.attributes.get("media_content_id") != old_id or (
-                    old is None or old.state != STATE_PLAYING
-                ):
-                    return True
-            return False
+        def ours(entity_id: str, st: Any) -> bool:
+            """This state shows our announcement playing (not what was on before)."""
+            if st is None or st.state != STATE_PLAYING:
+                return False
+            old = before.get(entity_id)
+            old_id = old.attributes.get("media_content_id") if old else None
+            return st.attributes.get("media_content_id") != old_id or (
+                old is None or old.state != STATE_PLAYING
+            )
+
+        def active() -> bool:
+            return any(
+                (st := self.hass.states.get(s)) is not None
+                and st.state in PLAYBACK_ACTIVE_STATES
+                for s in speakers
+            )
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + start_timeout
-        while not ours_playing() and loop.time() < deadline:
-            await asyncio.sleep(0.25)
-        if not ours_playing():
-            return False  # never saw it play (or a speaker that doesn't report it)
-        mark("playback_start_ms")
-        # ~15 characters per second of speech, plus margin.
-        deadline = loop.time() + max(PLAYBACK_END_TIMEOUT, len(text) / 12 + 20)
-        while ours_playing() and loop.time() < deadline:
-            await asyncio.sleep(0.25)
+        # Watch state changes as they happen, so even a very short burst of
+        # "playing" (an announcement cut off at once) is seen.
+        start: float | None = None
+        last_active: float | None = None
+
+        @callback
+        def _changed(event: Event[EventStateChangedData]) -> None:
+            nonlocal start, last_active
+            new, old = event.data["new_state"], event.data["old_state"]
+            now = loop.time()
+            if start is None and ours(event.data["entity_id"], new):
+                start = now
+            if start is not None and (
+                (new is not None and new.state in PLAYBACK_ACTIVE_STATES)
+                or (old is not None and old.state in PLAYBACK_ACTIVE_STATES)
+            ):
+                last_active = now  # active until now
+
+        unsub = async_track_state_change_event(self.hass, speakers, _changed)
+        try:
+            if any(ours(s, self.hass.states.get(s)) for s in speakers):
+                start = last_active = loop.time()
+            deadline = loop.time() + start_timeout
+            while start is None and loop.time() < deadline:
+                await asyncio.sleep(0.1)
+            if start is None:
+                return PLAY_NOT_STARTED  # never saw it play (or it doesn't report it)
+            mark("playback_start_ms")
+            expected = len(text) / SPEECH_CHARS_PER_SECOND
+            deadline = start + max(PLAYBACK_END_TIMEOUT, expected + 20)
+            while loop.time() < deadline:
+                now = loop.time()
+                if active():
+                    last_active = now
+                elif now - (last_active or start) >= PLAYBACK_END_GRACE:
+                    break
+                await asyncio.sleep(0.25)
+        finally:
+            unsub()
         mark("playback_end_ms")
-        return True
+        played = (last_active or start) - start
+        mark.note("played_s", round(played, 2))
+        if played < max(SHORT_PLAY_MIN, expected * SHORT_PLAY_FRACTION):
+            return PLAY_SHORT
+        return PLAY_OK
 
     # -- fallback notification ---------------------------------------------------
     async def _notify_fallback(self, message: str) -> None:

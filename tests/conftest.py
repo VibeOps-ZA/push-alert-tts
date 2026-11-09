@@ -35,6 +35,14 @@ def fast_timings():
     with (
         patch("custom_components.push_alert_tts.coordinator.SPEAKER_SETTLE", 0),
         patch("custom_components.push_alert_tts.coordinator.PLAYBACK_START_TIMEOUT", 0),
+        patch("custom_components.push_alert_tts.coordinator.PLAYBACK_END_GRACE", 0),
+        patch("custom_components.push_alert_tts.coordinator.SHORT_PLAY_MIN", 0),
+        patch("custom_components.push_alert_tts.coordinator.RETRY_PAUSE", 0),
+        # Tests that need these set the option explicitly.
+        patch("custom_components.push_alert_tts.coordinator.DEFAULT_WAKE_WAIT", 0),
+        patch(
+            "custom_components.push_alert_tts.coordinator.DEFAULT_ANNOUNCE_RETRIES", 0
+        ),
     ):
         yield
 

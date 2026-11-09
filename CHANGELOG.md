@@ -5,6 +5,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-09
+
+### Fixed
+- **Announcements cut off after the first word.** A speaker (or speaker group) that briefly reported *buffering*
+  in the middle of an announcement was taken as finished, and speakers that had been off were switched off again,
+  cutting the alert short. *Buffering* now counts as playing, and an announcement only counts as finished once the
+  speaker has stayed stopped for 2 seconds. Playback is followed through state changes as they happen, so even a
+  very short burst of playing is seen.
+
+### Added
+- **Retries if an announcement fails or is cut short** (default 1, 0 = off). If the text-to-speech call fails, the
+  speaker never starts playing, or it stops far sooner than the text needs, the alert is spoken again. If every try
+  fails, the fallback notification is sent with the text and the reason. 0 keeps the earlier behaviour.
+- **Wait for speakers to wake up** (default 10 seconds, 0 = off). Before speaking, waits until every speaker and the
+  speaker group are on (speakers that were off, and groups, take a few seconds), then speaks anyway when the time
+  is up.
+- Timings record `awake_ms`, `awake_timeout`, `played_s`, `retry_ms`, `attempts`, `retry_reason` and `outcome`.
+
 ## [0.8.0] - 2026-11-09
 
 ### Added

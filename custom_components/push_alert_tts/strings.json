@@ -70,6 +70,8 @@
         "data": {
           "speakers": "Speakers",
           "speaker_group": "Speaker group (plays in sync, optional)",
+          "wake_wait": "Wait for speakers to wake up (seconds)",
+          "announce_retries": "Retries if an announcement fails or is cut short",
           "tts_entity": "Text-to-speech engine",
           "tts_language": "Language (optional)",
           "message_mode": "What to say",
@@ -95,6 +97,8 @@
         "data_description": {
           "speakers": "Media players to announce on. All selected speakers speak at the same time. Separate speakers can start a second or so apart; use a speaker group below to keep them in sync.",
           "speaker_group": "A speaker group (e.g. a Google Home speaker group) that contains the speakers above. The announcement plays on the group so every speaker starts together; volume is still set and put back on each speaker. If the group is unavailable, fails or doesn't start playing within 10 seconds, each speaker is used instead. Leave empty to turn this off.",
+          "wake_wait": "Before speaking, wait up to this long until every speaker (and the speaker group) is awake, so a speaker that was off doesn't miss the start. It speaks anyway when the time is up. 0 = don't wait.",
+          "announce_retries": "If the announcement fails, never starts playing or stops much sooner than the text needs, say it again up to this many times. When every try fails, the fallback notification is sent. 0 = off (speakers that never report 'playing' would otherwise hear each alert twice).",
           "tts_entity": "For example Google Translate or Home Assistant Cloud.",
           "tts_language": "Leave empty for the engine's default, e.g. en-GB.",
           "regex": "Used when 'What to say' is set to the regex option. Without a template it speaks the named group called say if your pattern has one, otherwise group 1, otherwise the whole match. Case-insensitive, and '.' also matches line breaks. If nothing matches, the fixed phrase is spoken. See the README for ready-made patterns.",

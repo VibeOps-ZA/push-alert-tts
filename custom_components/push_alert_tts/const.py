@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -29,6 +29,8 @@ DEFAULT_DEVICE_NAME = "ha-alert-tts"
 # --- Options -----------------------------------------------------------------
 CONF_SPEAKERS = "speakers"
 CONF_SPEAKER_GROUP = "speaker_group"  # optional: plays on all speakers in sync
+CONF_WAKE_WAIT = "wake_wait"  # seconds to wait for speakers (and group) to wake up
+CONF_ANNOUNCE_RETRIES = "announce_retries"  # re-announce if it failed or was cut short
 CONF_TTS_ENTITY = "tts_entity"
 CONF_TTS_LANGUAGE = "tts_language"
 CONF_MESSAGE_MODE = "message_mode"
@@ -180,6 +182,18 @@ WAKE_TIMEOUT = 3  # seconds to wait for a sleeping speaker to report its volume
 PLAYBACK_START_TIMEOUT = 15
 GROUP_START_TIMEOUT = 10  # speaker group must start playing within this, else fall back
 PLAYBACK_END_TIMEOUT = 60
+# A speaker must stay stopped this long before the announcement counts as finished
+# (Google speakers briefly report "buffering" in the middle of playback).
+PLAYBACK_END_GRACE = 2.0
+PLAYBACK_ACTIVE_STATES = ("playing", "buffering")
+SPEECH_CHARS_PER_SECOND = 15  # rough speaking speed, to spot a cut-short announcement
+SHORT_PLAY_FRACTION = 0.3  # played for less than this share of the expected time = cut
+SHORT_PLAY_MIN = 1.0  # ... or for less than this many seconds
+RETRY_PAUSE = 2  # seconds between a failed announcement and its retry
+DEFAULT_WAKE_WAIT = 10
+MAX_WAKE_WAIT = 60
+DEFAULT_ANNOUNCE_RETRIES = 1
+MAX_ANNOUNCE_RETRIES = 3
 
 MESSAGE_FIELDS = (
     "id_str",

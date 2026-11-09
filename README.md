@@ -246,6 +246,38 @@ How it works and its safety net:
 - The history and **Last alert** *timings* show which way was used
   (`route`, see [What is recorded](#what-is-recorded)).
 
+### Wait for speakers to wake up *(default 10 seconds)*
+
+Speakers that were switched off (Google speakers report *off* when idle for
+a while) take a few seconds to come back, and a speaker group only wakes up
+after its speakers. If the announcement starts before that, the first words
+can be lost. Before speaking, Push Alert TTS waits up to this many seconds
+until every speaker in *Speakers* (and the *Speaker group*, if set) is on.
+When the time is up it speaks anyway, because playing the announcement wakes
+them too, so this can only delay an alert by this long, never stop it.
+Set **0** to not wait (the behaviour before version 0.9.0).
+
+### Retries if an announcement fails or is cut short *(default 1)*
+
+After speaking, Push Alert TTS watches the speaker (or group) and says the
+alert again, up to this many extra times, if:
+- the text-to-speech call **failed** (for example the voice service didn't
+  answer),
+- the speaker **never started playing**, or
+- it **stopped far sooner than the text needs** (cut short), for example
+  because a speaker dropped out.
+
+A speaker briefly showing *buffering* in the middle of an announcement is
+normal and isn't treated as the end. If every try fails, the **Phone / fallback
+notification** ([below](#phone--fallback-notification-optional-recommended)) is sent with the text and what went wrong, so the alert
+still reaches you. Tries are recorded as `attempts`, `retry_reason` and
+`outcome` in the *timings* ([What is recorded](#what-is-recorded)).
+
+Set **0** to turn retries off (the behaviour before version 0.9.0). Do that if
+your speaker never reports *playing* to Home Assistant (check its state on
+**Settings → Developer tools → States** while it speaks): it would otherwise
+hear every alert twice.
+
 ### Text-to-speech engine *(required)*
 
 The voice to use, e.g. `tts.google_en_com` or *Home Assistant
@@ -905,6 +937,8 @@ Fired when alerts are acknowledged from Home Assistant.
 | Hears the fixed phrase instead of your regex / template | Run `push_alert_tts.preview` with *Use last alert* on: `outcome` says why (no match, too few parts filled, or too slow) and `groups` shows what each group captured. Check *Where the regex looks*. |
 | Speakers sound like an echo (start at different times) | Set a **Speaker group** ([section 6](#speaker-group-plays-in-sync-optional)). |
 | Speaker group set, but *timings* show `route: group_fallback` | The group was unavailable or didn't start in time. Check that every speaker in the group is online, and that the group's `media_player` entity isn't *unavailable*. Play something on the group from the Google Home app to test it. |
+| Only the first word or two is heard | Update to 0.9.0 or later: before that, a speaker briefly showing *buffering* was taken as the end of the announcement and a speaker that had been off was switched off again mid-sentence. Check *timings*: `played_s` should be a few seconds and `outcome` `ok`. |
+| Every alert is heard twice | Your speaker probably doesn't report *playing*. Set **Retries** to 0 ([section 6](#retries-if-an-announcement-fails-or-is-cut-short-default-1)). |
 | Speaker stays loud after an announcement | It couldn't report its volume before speaking. Set the volume once in the speaker's own app. |
 | Need help | Open an [issue](https://github.com/VibeOps-ZA/push-alert-tts/issues) and attach a diagnostics download (device page → ⋮ → Download diagnostics). Turn on debug logging via **⋮ → Enable debug logging**, reproduce, then turn it off to download the log. |
 
@@ -1119,7 +1153,12 @@ milliseconds after the alert reached Home Assistant unless noted:
 | `ai_done_ms` | AI answered (or gave up) |
 | `speak_start_ms` | Announcement started (after any announcement already playing) |
 | `tts_call_ms` / `tts_done_ms` | Text-to-speech asked / audio ready |
-| `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it) |
+| `awake_ms` | Every speaker (and the group) was awake (only with *Wait for speakers to wake up* above 0) |
+| `awake_timeout` | Not a time: `true` when the speakers weren't all awake in time and it spoke anyway |
+| `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it). Finished means stopped for at least 2 seconds; *buffering* counts as playing |
+| `played_s` | Not a time after the alert: seconds the speaker was seen playing |
+| `retry_ms` | The last retry started (only when one was needed) |
+| `attempts` / `retry_reason` / `outcome` | Not times: how many tries; why the last retry was needed; how the last try went: `ok`, `cut_short`, `not_started` or `failed` |
 | `group_fallback_ms` | The speaker group didn't play, so each speaker was used instead (only with a *Speaker group*) |
 | `route` | Not a time: `group` (played on the speaker group), `group_fallback` (group set but each speaker used) or `speakers` (no group set) |
 

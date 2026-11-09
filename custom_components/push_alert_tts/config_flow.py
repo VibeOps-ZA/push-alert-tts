@@ -63,6 +63,7 @@ from .const import (
     CONF_AI_TIMEOUT,
     CONF_AI_URL,
     CONF_AI_WAKE_ENTITY,
+    CONF_ANNOUNCE_RETRIES,
     CONF_APP_FILTER,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
@@ -92,11 +93,13 @@ from .const import (
     CONF_TTS_LANGUAGE,
     CONF_TWOFA,
     CONF_USER_KEY,
+    CONF_WAKE_WAIT,
     DEFAULT_AI_AUTO_BACKFILL,
     DEFAULT_AI_EMERGENCY_TIMEOUT,
     DEFAULT_AI_MAX_WORDS,
     DEFAULT_AI_OFFLINE_ALERT,
     DEFAULT_AI_TIMEOUT,
+    DEFAULT_ANNOUNCE_RETRIES,
     DEFAULT_DEVICE_NAME,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_FIXED_MESSAGE,
@@ -108,12 +111,15 @@ from .const import (
     DEFAULT_PART_MAX_LENGTH,
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
+    DEFAULT_WAKE_WAIT,
     DOMAIN,
     MAX_AI_CONTEXT,
     MAX_AI_GPU_LAYERS,
     MAX_AI_OFFLINE_ALERT,
     MAX_AI_TIMEOUT,
+    MAX_ANNOUNCE_RETRIES,
     MAX_HISTORY_DAYS,
+    MAX_WAKE_WAIT,
     MESSAGE_MODES,
     MODE_FIXED,
     MODE_REGEX,
@@ -416,6 +422,28 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                     CONF_SPEAKER_GROUP,
                     description={"suggested_value": current.get(CONF_SPEAKER_GROUP)},
                 ): EntitySelector(EntitySelectorConfig(domain="media_player")),
+                vol.Optional(
+                    CONF_WAKE_WAIT, default=opt(CONF_WAKE_WAIT, DEFAULT_WAKE_WAIT)
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=MAX_WAKE_WAIT,
+                        step=1,
+                        unit_of_measurement="s",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CONF_ANNOUNCE_RETRIES,
+                    default=opt(CONF_ANNOUNCE_RETRIES, DEFAULT_ANNOUNCE_RETRIES),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=MAX_ANNOUNCE_RETRIES,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
                 vol.Optional(
                     CONF_TTS_ENTITY,
                     description={"suggested_value": current.get(CONF_TTS_ENTITY)},
