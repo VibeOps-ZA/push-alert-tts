@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections import OrderedDict, deque
 from collections.abc import Mapping
@@ -51,6 +52,7 @@ from .const import (
     AI_BACKFILL_MAX,
     AI_BACKFILL_PAUSE,
     AI_BACKFILL_TIMEOUT,
+    AI_CORRECTION_MAX,
     AI_OFFLINE_SKIP,
     AI_PROBE_INTERVAL,
     AI_PROBE_TIMEOUT,
@@ -215,10 +217,46 @@ def history_record(
     return row
 
 
+_PRIORITY_TAG = re.compile(r"\[P\d\]")
+_STATE_PREFIX = re.compile(r"^[A-Za-z][A-Za-z -]{0,19}:\s*")
+
+
+def monitor_key(title: str | None) -> str:
+    """'[P1] Re-Triggered: disk | db1 [P1] on host:x' -> 'disk | db1'.
+
+    The alert's own name, without its state, priority tags or trailing host
+    list, so a correction applies to every alert from the same monitor.
+    """
+    text = (title or "").strip()
+    first = _PRIORITY_TAG.search(text)
+    if first and first.start() == 0:
+        text = text[first.end() :].strip()
+    text = _STATE_PREFIX.sub("", text, count=1)
+    tag = _PRIORITY_TAG.search(text)
+    if tag:
+        text = text[: tag.start()]
+    return re.sub(r"\s+", " ", text).strip()[:120]
+
+
+def find_history_row(
+    path: str, received: str | None, title: str | None
+) -> dict[str, Any] | None:
+    """The saved alert with this received time (and title, if given)."""
+    for row in reversed(_read_lines(path)):
+        if received and row.get("received") != received:
+            continue
+        if title and (row.get("title") or "").strip() != title.strip():
+            continue
+        if received or title:
+            return row
+    return None
+
+
 def review_row(row: Mapping[str, Any]) -> dict[str, Any]:
     """A history row as shown by the AI review sensor."""
     return {
         "received": row.get("received"),
+        "title": row.get("title"),
         "alert": llm.alert_text(row),
         "spoken": row.get("spoken_text"),
         "ai_text": row.get("ai_text"),
@@ -1472,6 +1510,45 @@ class AlertTTS:
         if removed:
             await self.async_set_memory(keep)
         return removed
+
+    async def async_add_correction(
+        self,
+        text: str,
+        received: str | None = None,
+        title: str | None = None,
+        reword: bool = True,
+    ) -> dict[str, Any]:
+        """A correction typed for one alert: saved with that alert as context.
+
+        The memory line names the alert's monitor, so the AI knows which
+        alerts it is about. With ``reword`` the alert is worded again with the
+        new memory (nothing is spoken), so the effect can be checked at once.
+        """
+        text = " ".join(text.split())[:AI_CORRECTION_MAX]
+        if not text:
+            raise HomeAssistantError("The correction is empty")
+        row = None
+        if received or title:
+            row = await self.hass.async_add_executor_job(
+                find_history_row, self.history_path, received, title
+            )
+        key = monitor_key((row or {}).get("title") or title)
+        line = f"{text} (about alerts like: {key})" if key else text
+        added = await self.async_add_memory(line)
+        result: dict[str, Any] = {
+            "added": added,
+            "alert_found": row is not None,
+            "new_wording": None,
+            "wording_reason": None,
+        }
+        if reword and row is not None and self.ai_enabled:
+            ai = await self.ai_wording(
+                [row], None, False, max_timeout=AI_BACKFILL_TIMEOUT, track=False
+            )
+            if ai is not None:
+                result["new_wording"] = ai["text"]
+                result["wording_reason"] = ai["reason"]
+        return result
 
     async def async_add_memory(self, text: str) -> list[str]:
         """Add plain-language correction(s), exactly as written."""

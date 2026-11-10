@@ -96,6 +96,7 @@ from .const import (
     CONF_TWOFA,
     CONF_USER_KEY,
     CONF_WAKE_WAIT,
+    CONF_WORD_REPLACEMENTS,
     DEFAULT_AI_AUTO_BACKFILL,
     DEFAULT_AI_EMERGENCY_TIMEOUT,
     DEFAULT_AI_MAX_WORDS,
@@ -510,6 +511,12 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_REMOVE_REPEATS, default=opt(CONF_REMOVE_REPEATS, True)
                 ): BooleanSelector(),
+                vol.Optional(
+                    CONF_WORD_REPLACEMENTS,
+                    description={
+                        "suggested_value": current.get(CONF_WORD_REPLACEMENTS)
+                    },
+                ): TextSelector(TextSelectorConfig(multiline=True)),
                 vol.Optional(
                     CONF_MAX_LENGTH, default=opt(CONF_MAX_LENGTH, DEFAULT_MAX_LENGTH)
                 ): NumberSelector(

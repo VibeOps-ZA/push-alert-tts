@@ -795,3 +795,65 @@ async def test_reword_button(
         )
         await hass.async_block_till_done(wait_background_tasks=True)
     assert _history(runtime)[-1]["ai_text"] == "P1 alert at Acme. Disk full."
+
+
+# -- corrections from the review card ------------------------------------------------
+def test_monitor_key():
+    from custom_components.push_alert_tts.coordinator import monitor_key
+
+    assert monitor_key("[P1] Re-Triggered: disk | acme.db1.prod [P1]") == (
+        "disk | acme.db1.prod"
+    )
+    assert monitor_key(
+        "[P2] Triggered: http | check | a.b [P2] on host:a.b,instance:x"
+    ) == "http | check | a.b"
+    assert monitor_key("Disk almost full on server 3") == "Disk almost full on server 3"
+    assert monitor_key(None) == ""
+
+
+async def test_add_ai_correction_with_alert_context(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    tts = async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme on database 1. Full."))
+    runtime = await _setup(hass, mock_entry, **AI)
+    runtime.enabled = True
+    await _alert(hass, runtime, _msg(1))
+    row = _history(runtime)[-1]
+    review = hass.states.get("sensor.push_alert_tts_ai_review").attributes["alerts"]
+    assert review[0]["title"] == row["title"]
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(CHAT, json=_answer("P1 alert at Acme database. Full."))
+    result = await hass.services.async_call(
+        DOMAIN,
+        "add_ai_correction",
+        {"text": "Say Acme database,\n not database 1", "received": row["received"]},
+        blocking=True,
+        return_response=True,
+    )
+    line = "Say Acme database, not database 1 (about alerts like: disk | acme.db1.prod)"
+    assert result["added"] == [line] and runtime.memory[-1] == line
+    assert result["alert_found"] is True
+    assert result["new_wording"] == "P1 alert at Acme database. Full."
+    _m, _u, body, _h = aioclient_mock.mock_calls[-1]
+    assert line in body["messages"][0]["content"]  # the new memory was used
+    assert len(tts) == 1  # nothing spoken for the re-wording
+    assert len(_history(runtime)) == 1  # and the history is unchanged
+
+
+async def test_add_ai_correction_without_alert(
+    hass: HomeAssistant, mock_entry, no_listener
+) -> None:
+    runtime = await _setup(hass, mock_entry, **AI)
+    result = await hass.services.async_call(
+        DOMAIN,
+        "add_ai_correction",
+        {"text": "Say HAProxy as HA proxy", "received": "2020-01-01T00:00:00+00:00"},
+        blocking=True,
+        return_response=True,
+    )
+    assert result["alert_found"] is False and result["new_wording"] is None
+    assert runtime.memory == ["Say HAProxy as HA proxy"]

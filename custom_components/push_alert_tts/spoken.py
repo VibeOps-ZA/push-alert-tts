@@ -40,6 +40,7 @@ from .const import (
     CONF_REMOVE_REPEATS,
     CONF_SPOKEN_TEMPLATE,
     CONF_TIDY_TEXT,
+    CONF_WORD_REPLACEMENTS,
     DEFAULT_FIXED_MESSAGE,
     DEFAULT_MAX_LENGTH,
     DEFAULT_MIN_PRIORITY,
@@ -417,10 +418,35 @@ def build_spoken(
     else:
         return {"text": fixed, "outcome": OUTCOME_FIXED, "groups": {}}
 
+    pairs = parse_replacements(options.get(CONF_WORD_REPLACEMENTS))
+    if pairs:
+        text = apply_replacements(text, pairs)
     text = truncate(text, _limit(options))
     if not text:
         return {"text": fixed, "outcome": OUTCOME_EMPTY, "groups": groups}
     return {"text": text, "outcome": outcome, "groups": groups}
+
+
+def parse_replacements(value: str | None) -> list[tuple[str, str]]:
+    """'from = to' lines -> [(from, to)]; blank or malformed lines are skipped."""
+    pairs = []
+    for line in (value or "").splitlines():
+        if "=" not in line:
+            continue
+        old, new = line.split("=", 1)
+        old, new = old.strip(), new.strip()
+        if old:
+            pairs.append((old, new))
+    return pairs
+
+
+def apply_replacements(text: str, pairs: list[tuple[str, str]]) -> str:
+    """Replace whole words/phrases, ignoring case (longest first)."""
+    for old, new in sorted(pairs, key=lambda p: len(p[0]), reverse=True):
+        text = re.sub(
+            rf"(?<![\w-]){re.escape(old)}(?![\w-])", new, text, flags=re.IGNORECASE
+        )
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 def build_text(alerts: list[Mapping[str, Any]], options: Mapping[str, Any]) -> str:

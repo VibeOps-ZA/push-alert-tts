@@ -7,6 +7,7 @@ Not made, endorsed or supported by Pushover, LLC.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import voluptuous as vol
@@ -25,8 +26,11 @@ from .api import as_int
 from .const import (
     AI_BACKFILL_DEFAULT_DAYS,
     AI_BACKFILL_MAX,
+    AI_CORRECTION_MAX,
     DOMAIN,
     MAX_HISTORY_DAYS,
+    REVIEW_CARD_URL,
+    VERSION,
 )
 from .coordinator import AlertTTS
 
@@ -48,6 +52,17 @@ SERVICE_ADD_MEMORY = "add_ai_memory"
 SERVICE_GET_MEMORY = "get_ai_memory"
 SERVICE_REPROCESS = "reprocess_ai"
 SERVICE_REMOVE_MEMORY = "remove_ai_memory"
+SERVICE_ADD_CORRECTION = "add_ai_correction"
+ADD_CORRECTION_SCHEMA = vol.Schema(
+    {
+        vol.Required("text"): vol.All(cv.string, vol.Length(min=1, max=AI_CORRECTION_MAX)),
+        vol.Optional("received"): cv.string,
+        vol.Optional("title"): cv.string,
+        vol.Optional("reword", default=True): cv.boolean,
+    }
+)
+CARD_FILE = os.path.join(os.path.dirname(__file__), "frontend", "push-alert-tts-review-card.js")
+_LOGGER = logging.getLogger(__name__)
 REMOVE_MEMORY_SCHEMA = vol.All(
     vol.Schema(
         {
@@ -100,6 +115,25 @@ def _runtime(hass: HomeAssistant) -> AlertTTS:
         if entry.state is ConfigEntryState.LOADED:
             return entry.runtime_data
     raise HomeAssistantError("Push Alert TTS is not set up")
+
+
+async def _register_card(hass: HomeAssistant) -> None:
+    """Serve the review card and load it on every dashboard (no extra install).
+
+    Skipped quietly when the web server or frontend isn't loaded (e.g. tests).
+    """
+    if getattr(hass, "http", None) is None:
+        return
+    try:
+        from homeassistant.components.frontend import add_extra_js_url
+        from homeassistant.components.http import StaticPathConfig
+
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(REVIEW_CARD_URL, CARD_FILE, False)]
+        )
+        add_extra_js_url(hass, f"{REVIEW_CARD_URL}?v={VERSION}")
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("Could not load the Push Alert TTS review card")
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -187,6 +221,16 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             "path": runtime.memory_path,
         }
 
+    async def _add_correction(call: ServiceCall) -> ServiceResponse:
+        runtime = _runtime(hass)
+        result = await runtime.async_add_correction(
+            call.data["text"],
+            call.data.get("received"),
+            call.data.get("title"),
+            call.data["reword"],
+        )
+        return {**result, "memory": list(runtime.memory)}
+
     async def _remove_memory(call: ServiceCall) -> ServiceResponse:
         runtime = _runtime(hass)
         removed = await runtime.async_remove_memory(
@@ -207,6 +251,14 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         _get_memory,
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ADD_CORRECTION,
+        _add_correction,
+        schema=ADD_CORRECTION_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    await _register_card(hass)
     hass.services.async_register(
         DOMAIN,
         SERVICE_REMOVE_MEMORY,

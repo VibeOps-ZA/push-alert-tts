@@ -168,3 +168,27 @@ def test_expand_in_title_mode():
     assert build_text([alert("prod db_02 err")], opts) == (
         "production database 02 error"
     )
+
+
+def test_word_replacements_on_normal_text():
+    title = "[P1] Re-Triggered: http | web_service_failure_check | shop.app01.prod"
+    opts = {**OPTS, "word_replacements": "re-triggered = re alert\nbad line\n = x"}
+    assert build_text([alert(title)], opts) == (
+        "Alert, http, web service failure check, shop app01 prod, re alert"
+    )
+    # "Triggered" alone is a different word: left as it is.
+    title = "[P1] Triggered: http | web_service_failure_check | shop.app01.prod"
+    assert build_text([alert(title)], opts).endswith(", Triggered")
+
+
+def test_parse_and_apply_replacements():
+    from custom_components.push_alert_tts.spoken import (
+        apply_replacements,
+        parse_replacements,
+    )
+
+    pairs = parse_replacements("Re-Triggered = re alert\nprod=production\n\nnoequals")
+    assert pairs == [("Re-Triggered", "re alert"), ("prod", "production")]
+    assert apply_replacements("RE-TRIGGERED on prod, product", pairs) == (
+        "re alert on production, product"
+    )

@@ -5,6 +5,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-10
+
+### Added
+- **Review card** (`custom:push-alert-tts-review-card`), loaded automatically with the integration: the AI review
+  list as a table with an **Improve?** button per alert. Type a correction and press Send (or Enter): it is saved
+  to the AI memory with the alert it is about, and the AI words that alert again so you can see the result.
+  Nothing is spoken.
+- `push_alert_tts.add_ai_correction` action: save a correction for one alert (by `received` time or `title`); the
+  memory line gets "(about alerts like: <alert name>)"; optional re-wording returned as `new_wording`.
+- **Word replacements for the normal text** option: `from = to` lines (e.g. `Re-Triggered = re alert`), whole words
+  or phrases, any capitals. Applies to the normal (non-AI) spoken text only. Empty = off.
+- The AI review list now includes each alert's `title`.
+
 ## [0.11.0] - 2026-11-10
 
 ### Fixed

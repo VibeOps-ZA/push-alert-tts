@@ -94,7 +94,8 @@
           "repeat_interval": "Emergency repeat interval",
           "repeat_max": "Maximum emergency repeats",
           "offline_alert_delay": "Warn when offline for",
-          "history_days": "Keep alert history for"
+          "history_days": "Keep alert history for",
+          "word_replacements": "Word replacements for the normal text (optional)"
         },
         "data_description": {
           "speakers": "Media players to announce on. All selected speakers speak at the same time. Separate speakers can start a second or so apart; use a speaker group below to keep them in sync.",
@@ -116,7 +117,8 @@
           "tidy_text": "Reads underscores as spaces, dots between words (host.name) as spaces and | as a pause, and removes doubled or dangling commas.",
           "expand_abbreviations": "Speaks common IT shorthand in full, e.g. prod as production, db as database, lb01 as load balancer 01. Whole words only. The full list is in the README.",
           "remove_repeated_words": "Spoken template only. Leaves out words an earlier part of the sentence already said, so names repeated in an alert are only spoken once.",
-          "history_days": "Days. Saves every received alert to a small file in your config folder so you can look back with the get_history action. 0 = off (and deletes the saved history)."
+          "history_days": "Days. Saves every received alert to a small file in your config folder so you can look back with the get_history action. 0 = off (and deletes the saved history).",
+          "word_replacements": "One per line, written as: from = to. For example Re-Triggered = re alert. Whole words or phrases, any capitals. Applies to the normal (non-AI) spoken text only; to change the AI's wording, use the AI instructions or memory. Empty = off."
         },
         "sections": {
           "ai_wording": {
@@ -374,6 +376,28 @@
         "text": {
           "name": "Text",
           "description": "The exact text of the line to remove."
+        }
+      }
+    },
+    "add_ai_correction": {
+      "name": "Add an AI correction for an alert",
+      "description": "Save a plain-language correction to the AI memory, with the alert it is about, then word that alert again (nothing is spoken) so you can check the result. Used by the review card's Improve? button.",
+      "fields": {
+        "text": {
+          "name": "Correction",
+          "description": "What the AI should do differently, in plain words."
+        },
+        "received": {
+          "name": "Alert received",
+          "description": "The alert's received time, from the AI review list or get_history."
+        },
+        "title": {
+          "name": "Alert title",
+          "description": "The alert's title, if you don't have its received time."
+        },
+        "reword": {
+          "name": "Word it again",
+          "description": "Ask the AI to word the alert again with the new memory and return the result. Nothing is spoken."
         }
       }
     }

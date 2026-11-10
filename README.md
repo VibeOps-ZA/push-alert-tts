@@ -550,6 +550,22 @@ spoken once. For the title
 | On | "Alert, eu shop pay hr, threshold, integration, Re-Triggered" |
 | Off | "Alert, eu shop pay hr, threshold, integration pay shop, Re-Triggered" |
 
+### Word replacements for the normal text (optional)
+
+Swap words or phrases in the normal (non-AI) spoken text. One per line,
+written as `from = to`, for example:
+
+```
+Re-Triggered = re alert
+prod = production
+```
+
+Matches whole words or phrases only (so `prod` does not change `product`)
+and ignores capitals. It runs after tidying and abbreviations, on the final
+sentence. Empty (the default) = off. It does **not** change the AI's wording:
+for that, use the AI instructions or the AI memory
+([section 18](#18-ai-wording-with-a-local-llm-optional)).
+
 A part that ends up empty because all its words were already said is simply
 left out; it still counts as *filled* for the "fewer than half" safety net.
 
@@ -970,6 +986,21 @@ Fired when alerts are acknowledged from Home Assistant.
     text: "Say HAProxy as HA proxy, never abbreviate it."
   ```
 
+  `push_alert_tts.add_ai_correction` saves a correction **for one alert**:
+  `text` (required), plus the alert's `received` time (from the AI review
+  list or `get_history`) or its `title`. The memory line gets *(about alerts
+  like: <the alert's name>)* added. With `reword` (on by default) the AI
+  words that alert again with the new memory and the response has
+  `new_wording` (or `wording_reason` if it couldn't). Nothing is spoken.
+  This is what the review card's **Improve?** button uses.
+
+  ```yaml
+  action: push_alert_tts.add_ai_correction
+  data:
+    text: "Say Acme database, not Acme MySQL."
+    received: "2026-01-31T06:52:11+00:00"
+  ```
+
   ```yaml
   action: push_alert_tts.remove_ai_memory
   data:
@@ -1203,33 +1234,52 @@ memories make every answer slower.
 
 ### Reviewing what it says
 
-The **AI review** sensor lists the alerts of the last 3 days (up to 50) with
-the alert as received and what was spoken. This card shows them as a table,
-with the correction box underneath. Click **+ Add card → Manual** and paste:
+The **AI review** sensor lists the alerts of the last 3 days (up to 50): the
+alert as received, what the AI said and what was spoken. Push Alert TTS comes
+with a **review card** that shows them as a table, with an **Improve?**
+button on every row. Nothing extra needs installing: the card loads with the
+integration (if it doesn't appear after an update, reload the page or clear
+the browser cache).
+
+Add it to a dashboard: **Edit dashboard → + Add card**, search for
+**Push Alert TTS review**, or choose **Manual** and paste:
 
 ```yaml
-type: vertical-stack
-cards:
-  - type: markdown
-    title: AI wording - last 3 days
-    content: >-
-      {% set rows = state_attr('sensor.push_alert_tts_ai_review', 'alerts') or [] %}
-      {% if rows %}
-      <table><tr><th>Received</th><th>Alert</th><th>Spoken</th></tr>
-      {% for r in rows %}
-      <tr><td>{{ as_timestamp(r.received) | timestamp_custom('%d %b %H:%M') }}</td>
-      <td><details><summary>{{ (r.alert or '').split('\n')[0][:80] | e }}</summary>{{ (r.alert or '') | e | replace('\n', '<br>') }}</details></td>
-      <td>{{ (r.spoken or '') | e }}{% if r.source != 'ai' %} <i>(normal text: {{ r.reason }})</i>{% endif %}{% if r.backfilled %}<br><small>AI later: {{ (r.ai_text or '-') | e }}</small>{% endif %}</td></tr>
-      {% endfor %}</table>
-      {% else %}No alerts in the last 3 days.{% endif %}
-  - type: entities
-    entities:
-      - entity: text.push_alert_tts_ai_correction
-        name: Tell the AI what to improve
+type: custom:push-alert-tts-review-card
+entity: sensor.push_alert_tts_ai_review   # optional, this is the default
+title: AI wording - last 3 days           # optional
 ```
 
-([Markdown card](https://www.home-assistant.io/dashboards/markdown/),
-[text entities](https://www.home-assistant.io/integrations/text/).)
+How to teach the AI from the card:
+
+1. Find an alert the AI worded wrongly and press **Improve?**.
+2. Type what it should do differently in plain words, e.g. *Say Acme
+   database, not Acme MySQL*.
+3. Press **Send** (or Enter; Shift+Enter starts a new line).
+
+The correction is saved to the AI memory together with the alert it's about
+(the line ends with *(about alerts like: ...)*, so the AI knows which alerts
+it applies to). The AI then words that same alert again with the new memory
+and the card shows the result, so you can check it worked. **Nothing is
+spoken** and the alert's history is not changed. If it's still not right,
+press **Improve?** again and add another correction, or remove the line
+(see *Teaching it* above).
+
+The same is available as the `push_alert_tts.add_ai_correction` action
+(section 14). The **AI correction** text box (`text.push_alert_tts_ai_correction`)
+still works too, but it has no alert to attach, and it clears itself after
+saving without any message; its *last_added* attribute shows what was saved.
+
+To show the AI memory next to the card, add a
+[Markdown card](https://www.home-assistant.io/dashboards/markdown/):
+
+```yaml
+type: markdown
+content: >-
+  {% set m = state_attr('text.push_alert_tts_ai_correction', 'memory') or [] %}
+  **AI memory** ({{ m | count }} corrections){% for line in m %}
+  - {{ line }}{% endfor %}
+```
 
 If the AI was offline for a while, those alerts show the normal text and no
 AI wording. Run the `push_alert_tts.reprocess_ai` action

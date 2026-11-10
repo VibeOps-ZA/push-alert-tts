@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -53,6 +53,7 @@ CONF_PART_MAX_LENGTH = "part_max_length"
 CONF_TIDY_TEXT = "tidy_text"
 CONF_HISTORY_DAYS = "history_days"
 CONF_EXPAND_ABBREVIATIONS = "expand_abbreviations"
+CONF_WORD_REPLACEMENTS = "word_replacements"  # "from = to", one per line
 CONF_REMOVE_REPEATS = "remove_repeated_words"
 
 # AI wording (optional local LLM). Stored flat in the options; shown in a
@@ -125,6 +126,8 @@ DEFAULT_AI_OFFLINE_ALERT = 30  # minutes; 0 = no alert
 MAX_AI_OFFLINE_ALERT = 1440
 AI_WAKE_INTERVAL = 600  # press the wake button at most this often (seconds)
 WAKE_DOMAINS = ["button", "input_button", "script"]
+REVIEW_CARD_URL = "/push_alert_tts/push-alert-tts-review-card.js"
+AI_CORRECTION_MAX = 400  # characters of a correction typed on the review card
 
 MODE_FIXED = "fixed"
 MODE_TITLE = "title"

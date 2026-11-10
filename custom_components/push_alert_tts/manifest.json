@@ -3,7 +3,9 @@
   "name": "Push Alert TTS",
   "after_dependencies": [
     "tts",
-    "media_player"
+    "media_player",
+    "frontend",
+    "http"
   ],
   "codeowners": [
     "@VibeOps-ZA"
@@ -15,5 +17,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/VibeOps-ZA/push-alert-tts/issues",
   "requirements": [],
-  "version": "0.11.0"
+  "version": "0.12.0"
 }
