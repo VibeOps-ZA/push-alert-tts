@@ -155,7 +155,7 @@ async def test_every_try_cut_short_warns_on_the_phone(
 async def test_speakers_never_playing_retry_then_warn(
     hass: HomeAssistant, mock_entry, no_listener
 ) -> None:
-    """Group never starts, each speaker never reports playing: retry, then warn."""
+    """Group never starts, so the retry uses each speaker; it never plays: warn."""
     _states(hass)
     calls = _tts(hass, [[]])
     async_mock_service(hass, "media_player", "volume_set")
@@ -164,12 +164,7 @@ async def test_speakers_never_playing_retry_then_warn(
         runtime = await _setup(hass, mock_entry, **{CONF_ANNOUNCE_RETRIES: 1})
         timings: dict = {}
         await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
-    assert [c.data["media_player_entity_id"] for c in calls] == [
-        [GROUP],
-        MEMBERS,
-        [GROUP],
-        MEMBERS,
-    ]
+    assert [c.data["media_player_entity_id"] for c in calls] == [[GROUP], MEMBERS]
     assert timings["outcome"] == "not_started"
     assert len(notify) == 1
     assert "never started playing" in notify[0].data["message"]

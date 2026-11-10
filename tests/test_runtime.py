@@ -264,7 +264,7 @@ async def test_hung_tts_times_out_and_notifies(
 
     hass.services.async_register("tts", "speak", hang)
     runtime = await _setup(hass, mock_entry)
-    with patch("custom_components.push_alert_tts.coordinator.TTS_TIMEOUT", 0.05):
+    with patch("custom_components.push_alert_tts.coordinator.PLAY_CALL_TIMEOUT", 0.05):
         await runtime.speak("hello")
     assert "announcement failed" in notify[0].data["message"]
     assert not runtime._speak_lock.locked()

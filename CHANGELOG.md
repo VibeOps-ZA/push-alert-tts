@@ -5,6 +5,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-10
+
+### Fixed
+- **Announcements failing when the voice service is slow or unreachable** (for example while the internet or DNS is
+  struggling). The speakers were told to play before the audio existed, so they waited 30 seconds, gave up and made
+  a wake-up sound on every try. Now the whole audio is made first, and only then are the speakers asked to play it.
+
+### Added
+- The *Backup text-to-speech engine* is also used when the main voice can't make the audio in time (8 seconds; the
+  backup starts too after 3 seconds and the first to finish is used), not only for retries.
+- **Recorded fixed phrase**: the *Fixed phrase* is recorded in advance (on start-up and when the phrase or voices
+  change) and played when no voice can make the audio, so an alert is never silent while the speakers work. The full
+  text is then sent to the phone notification.
+- *Retries* can be set up to 5 (was 3).
+- Timings record `audio_ready_ms`, `voice` (`main`, `backup` or `clip`) and `voice_failed`; `outcome` can be
+  `no_audio`.
+
+### Changed
+- Each try plays once on one route: the group first; after a group failure (or no start) the next try uses each
+  speaker, then the group again; a try that was cut short repeats its route. So each try makes at most one wake-up
+  sound. With *Retries* at 0 a group that doesn't play still falls back to each speaker once, as before.
+- A speaker gets 20 seconds to accept the ready audio (was 45 seconds for the whole text-to-speech call).
+
 ## [0.10.0] - 2026-11-10
 
 ### Added

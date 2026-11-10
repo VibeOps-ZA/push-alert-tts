@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -198,10 +198,15 @@ SHORT_PLAY_FRACTION = 0.3  # played for less than this share of the expected tim
 SHORT_PLAY_MIN = 1.0  # ... or for less than this many seconds
 RETRY_PAUSE = 2  # seconds between a failed announcement and its retry
 PREPARE_MAX_AGE = 120  # seconds a speaker snapshot taken before the AI stays valid
+GENERATE_TIMEOUT = 8  # seconds the main voice may take to make the audio
+BACKUP_GENERATE_TIMEOUT = 20  # ... the backup voice (a local voice may load first)
+BACKUP_HEAD_START = 3  # start the backup voice too if the main one is this slow
+PLAY_CALL_TIMEOUT = 20  # seconds a speaker may take to accept ready audio
+CLIP_REFRESH_INTERVAL = 3600  # re-check (and re-make if needed) the recorded phrase
 DEFAULT_WAKE_WAIT = 10
 MAX_WAKE_WAIT = 60
 DEFAULT_ANNOUNCE_RETRIES = 1
-MAX_ANNOUNCE_RETRIES = 3
+MAX_ANNOUNCE_RETRIES = 5
 
 MESSAGE_FIELDS = (
     "id_str",

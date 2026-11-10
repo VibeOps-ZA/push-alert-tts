@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.const import CONF_EMAIL
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.push_alert_tts import coordinator
 from custom_components.push_alert_tts.const import (
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
@@ -42,6 +44,50 @@ def fast_timings():
         patch("custom_components.push_alert_tts.coordinator.DEFAULT_WAKE_WAIT", 0),
         patch(
             "custom_components.push_alert_tts.coordinator.DEFAULT_ANNOUNCE_RETRIES", 0
+        ),
+    ):
+        yield
+
+
+def fake_media_id(engine: str, text: str, language: str | None) -> str:
+    """What the fake voice returns: enough to tell which voice said what."""
+    return f"test-media://{engine}|{language or ''}|{text}"
+
+
+async def fake_generate(hass, engine, text, language):
+    """Stand-in for audio.generate: makes no audio, always works."""
+    return fake_media_id(engine, text, language), b"audio", "mp3"
+
+
+async def fake_play_media(self, players, media, mark):
+    """Stand-in for AlertTTS._play_media: plays through a tts.speak service.
+
+    Most tests mock tts.speak (as the integration called it before 0.11.0) to
+    see what was said where; this keeps those tests meaningful.
+    """
+    engine, language, text = media.removeprefix("test-media://").split("|", 2)
+    data = {"media_player_entity_id": players, "message": text, "cache": True}
+    if language:
+        data["language"] = language
+    mark("tts_call_ms")
+    async with asyncio.timeout(coordinator.PLAY_CALL_TIMEOUT):
+        await self.hass.services.async_call(
+            "tts", "speak", data, target={"entity_id": engine}, blocking=True
+        )
+    mark("tts_done_ms")
+
+
+@pytest.fixture(autouse=True)
+def fake_voice(request):
+    """No real text-to-speech in tests unless marked real_voice."""
+    if request.node.get_closest_marker("real_voice"):
+        yield
+        return
+    with (
+        patch("custom_components.push_alert_tts.audio.generate", new=fake_generate),
+        patch(
+            "custom_components.push_alert_tts.coordinator.AlertTTS._play_media",
+            new=fake_play_media,
         ),
     ):
         yield

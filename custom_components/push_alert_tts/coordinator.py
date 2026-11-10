@@ -43,7 +43,7 @@ from homeassistant.util import dt as dt_util
 
 # ai_wording.py, not llm.py: HA 2026.10+ loads a file named llm.py as an LLM tools platform
 from . import ai_wording as llm
-from . import api
+from . import api, audio
 from .client import STATUS_LOGIN_REQUIRED, STATUS_STOPPED, PushoverListener
 from .const import (
     AI_API_OLLAMA,
@@ -57,6 +57,9 @@ from .const import (
     AI_REVIEW_DAYS,
     AI_REVIEW_MAX,
     AI_WAKE_INTERVAL,
+    BACKUP_GENERATE_TIMEOUT,
+    BACKUP_HEAD_START,
+    CLIP_REFRESH_INTERVAL,
     CONF_AI_API,
     CONF_AI_API_KEY,
     CONF_AI_AUTO_BACKFILL,
@@ -107,6 +110,7 @@ from .const import (
     DOMAIN,
     EVENT_ACK,
     EVENT_ALERT,
+    GENERATE_TIMEOUT,
     GROUP_START_TIMEOUT,
     ISSUE_AI_OFFLINE,
     ISSUE_STOPPED,
@@ -121,6 +125,7 @@ from .const import (
     MAX_WAKE_WAIT,
     MESSAGE_FIELDS,
     MODE_REGEX,
+    PLAY_CALL_TIMEOUT,
     PLAYBACK_ACTIVE_STATES,
     PLAYBACK_END_GRACE,
     PLAYBACK_END_TIMEOUT,
@@ -158,12 +163,14 @@ _PLAY_PROBLEM = {
     PLAY_NOT_STARTED: "announcement never started playing",
     PLAY_FAILED: "speaker announcement failed",
 }
+VOICE_MAIN = "main"
+VOICE_BACKUP = "backup"
+VOICE_CLIP = "clip"  # the fixed phrase recorded in advance: needs no voice service
 
 _LOGGER = logging.getLogger(__name__)
 _BAD_STATES = (STATE_UNAVAILABLE, STATE_UNKNOWN, None)
 
 SERVICE_TIMEOUT = 15  # volume / mute / power calls
-TTS_TIMEOUT = 45  # text-to-speech call (cloud engines can be slow)
 RECEIPT_LIFETIME = 3 * 3600  # Pushover emergency receipts expire within 3 h
 SPEAKER_SETTLE = 30  # wait this long at start-up for speakers to load
 STORE_VERSION = 1
@@ -388,6 +395,113 @@ class _Marks:
             self.timings[key] = value
 
 
+class _Voices:
+    """Makes the audio for one announcement, before any speaker plays it.
+
+    The main voice gets GENERATE_TIMEOUT seconds. If it hasn't finished after
+    BACKUP_HEAD_START seconds, the backup voice (if set) starts too and the
+    first to finish is used. If neither works, the recorded phrase is used.
+    """
+
+    def __init__(self, runtime: AlertTTS, text: str, main: str, mark: _Marks) -> None:
+        self.runtime = runtime
+        self.hass = runtime.hass
+        self.text = text
+        self.main = main
+        backup = runtime.options.get(CONF_TTS_BACKUP) or None
+        self.backup = backup if backup != main else None
+        self.mark = mark
+        self.media: dict[str, str] = {}  # voice -> media source id
+        self.failed: list[str] = []
+        self._tasks: dict[str, asyncio.Task] = {}
+
+    def start(self) -> None:
+        self._task(VOICE_MAIN)
+
+    def stop(self) -> None:
+        for task in self._tasks.values():
+            task.cancel()
+
+    def _task(self, voice: str) -> asyncio.Task:
+        if voice not in self._tasks:
+            engine = self.main if voice == VOICE_MAIN else self.backup
+            limit = GENERATE_TIMEOUT if voice == VOICE_MAIN else BACKUP_GENERATE_TIMEOUT
+            self._tasks[voice] = asyncio.create_task(self._make(voice, engine, limit))
+        return self._tasks[voice]
+
+    async def _make(self, voice: str, engine: str | None, limit: float) -> str | None:
+        if not engine:
+            return None
+        language = (
+            self.runtime.options.get(CONF_TTS_LANGUAGE) if voice == VOICE_MAIN else None
+        )
+        try:
+            async with asyncio.timeout(limit):
+                media, _data, _ext = await audio.generate(
+                    self.hass, engine, self.text, language
+                )
+        except Exception as err:  # noqa: BLE001 - any failure: use another voice
+            reason = "too slow" if isinstance(err, TimeoutError) else str(err)
+            _LOGGER.warning(
+                "The %s voice (%s) couldn't be used: %s", voice, engine, reason
+            )
+            self.failed.append(voice)
+            self.mark.note("voice_failed", list(self.failed))
+            return None
+        self.media[voice] = media
+        return media
+
+    async def first(self) -> tuple[str | None, str | None]:
+        """The first audio that can be played, and which voice made it."""
+        main = self._task(VOICE_MAIN)
+        if self.backup:
+            done, _ = await asyncio.wait({main}, timeout=BACKUP_HEAD_START)
+            if main in done and main.result():
+                return self._ready(main.result(), VOICE_MAIN)
+            pending = {main, self._task(VOICE_BACKUP)}
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    if task.result():
+                        voice = VOICE_MAIN if task is main else VOICE_BACKUP
+                        return self._ready(task.result(), voice)
+            return self._clip()
+        if await main:
+            return self._ready(main.result(), VOICE_MAIN)
+        return self._clip()
+
+    def _ready(self, media: str, voice: str) -> tuple[str, str]:
+        self.mark("audio_ready_ms")
+        return media, voice
+
+    def _clip(self) -> tuple[str | None, str | None]:
+        media = self.runtime.clip_media()
+        if media is None:
+            return None, None
+        return self._ready(media, VOICE_CLIP)
+
+    async def for_retry(self, current: str) -> tuple[str | None, str | None]:
+        """Audio for a retry: the backup voice's if set, else keep what was used.
+
+        After the recorded phrase, the voices are tried again (the problem
+        may be over).
+        """
+        if self.backup and current != VOICE_BACKUP:
+            media = self.media.get(VOICE_BACKUP) or await self._task(VOICE_BACKUP)
+            if media:
+                return media, VOICE_BACKUP
+        if current == VOICE_CLIP:
+            for voice in (VOICE_MAIN, VOICE_BACKUP):
+                if voice in self.media:
+                    return self.media[voice], voice
+            self._tasks.pop(VOICE_MAIN, None)
+            if media := await self._task(VOICE_MAIN):
+                return media, VOICE_MAIN
+        return None, None
+
+
 class AlertTTS:
     """Everything one Push Alert TTS config entry needs at runtime."""
 
@@ -426,6 +540,11 @@ class AlertTTS:
         self._alert_lock = asyncio.Lock()
         self._history_lock = asyncio.Lock()
         self.history_path = hass.config.path(DOMAIN, f"history_{entry.entry_id}.jsonl")
+        # The fixed phrase recorded in advance, played when no voice can be used.
+        self.clip_folder = hass.config.path(DOMAIN)
+        self.clip_name = f"clip_{entry.entry_id}"
+        self.clip: dict[str, Any] | None = None
+        self._clip_lock = asyncio.Lock()
         # AI wording.
         self.memory_path = hass.config.path(DOMAIN, f"ai_memory_{entry.entry_id}.txt")
         self.memory_versions_dir = hass.config.path(DOMAIN, "ai_memory_versions")
@@ -561,6 +680,9 @@ class AlertTTS:
             )
         except OSError as err:
             _LOGGER.warning("Could not read the AI memory or history: %s", err)
+        self.clip = await self.hass.async_add_executor_job(
+            audio.load_clip, self.clip_folder, self.clip_name
+        )
 
     @callback
     def async_start(self) -> None:
@@ -578,6 +700,9 @@ class AlertTTS:
                 self.entry.async_create_background_task(
                     self.hass, self.async_check_ai(), f"{DOMAIN}_ai_check"
                 )
+                self.entry.async_create_background_task(
+                    self.hass, self.async_refresh_clip(), f"{DOMAIN}_clip"
+                )
 
         self.entry.async_on_unload(async_at_started(self.hass, _start))
 
@@ -590,6 +715,15 @@ class AlertTTS:
 
         async def _probe(_now: Any) -> None:
             await self.async_check_ai()
+
+        async def _clip(_now: Any) -> None:
+            await self.async_refresh_clip()
+
+        self.entry.async_on_unload(
+            async_track_time_interval(
+                self.hass, _clip, timedelta(seconds=CLIP_REFRESH_INTERVAL)
+            )
+        )
 
         self.entry.async_on_unload(
             async_track_time_interval(
@@ -613,6 +747,11 @@ class AlertTTS:
         self.entry.async_create_background_task(
             self.hass, self.async_prune_history(), f"{DOMAIN}_history_prune"
         )
+        if self.hass.is_running:
+            # A changed voice or fixed phrase: record the phrase again.
+            self.entry.async_create_background_task(
+                self.hass, self.async_refresh_clip(), f"{DOMAIN}_clip"
+            )
         self.update_entities()
 
     @callback
@@ -1532,6 +1671,9 @@ class AlertTTS:
                 await self._notify_fallback(f"{text} (no text-to-speech engine)")
             return
 
+        # Start making the audio now, while the speakers are being readied.
+        voices = _Voices(self, text, tts_entity, mark)
+        voices.start()
         initial = {s: self.hass.states.get(s) for s in ready}
         prepared, self._prepared = self._prepared, None
         if prepared and time.monotonic() - prepared[0] < PREPARE_MAX_AGE:
@@ -1565,28 +1707,25 @@ class AlertTTS:
             # Only the speakers: a Cast speaker group comes up only once
             # something is played on it, so waiting for it would just add delay.
             await self._wait_awake(ready, mark)
-            outcome = await self._attempt(group, group_ok, tts_entity, ready, text, mark)
-            tries = 1
-            while outcome != PLAY_OK and tries <= self.announce_retries:
-                _LOGGER.warning(
-                    "Announcement %s; trying again (%s of %s): %s",
-                    _PLAY_PROBLEM[outcome],
-                    tries,
-                    self.announce_retries,
+            media, voice = await voices.first()
+            if media is None or voice is None:
+                _LOGGER.error(
+                    "No voice could make the audio and there is no recorded "
+                    "phrase: %s",
                     text,
                 )
-                mark.note("retry_reason", outcome)
-                await asyncio.sleep(RETRY_PAUSE)
-                tries += 1
-                mark("retry_ms")
-                retry_tts = self.options.get(CONF_TTS_BACKUP) or tts_entity
-                if retry_tts != tts_entity:
-                    mark.note("tts_used", "backup")
-                outcome = await self._attempt(
-                    group, group_ok, retry_tts, ready, text, mark
-                )
+                mark.note("outcome", "no_audio")
+                if notify_on_failure:
+                    await self._notify_fallback(
+                        f"{text} (no voice could be used, nothing was spoken)"
+                    )
+                return
+            outcome, tries, voice = await self._play_with_retries(
+                group if group_ok else None, ready, media, voice, voices, text, mark
+            )
             mark.note("attempts", tries)
             mark.note("outcome", outcome)
+            mark.note("voice", voice)
             # Retries off: only a failed call warns, as before retries existed.
             report = outcome == PLAY_FAILED or self.announce_retries > 0
             if outcome != PLAY_OK and report:
@@ -1598,11 +1737,17 @@ class AlertTTS:
                 )
                 if notify_on_failure:
                     await self._notify_fallback(f"{text} ({_PLAY_PROBLEM[outcome]})")
+            elif outcome == PLAY_OK and voice == VOICE_CLIP and notify_on_failure:
+                # The recorded phrase only says the fixed phrase: send the details.
+                await self._notify_fallback(
+                    f"{text} (no voice could be used; the recorded phrase was played)"
+                )
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Announcement failed: %s", err)
             if notify_on_failure:
                 await self._notify_fallback(f"{text} (speaker announcement failed)")
         finally:
+            voices.stop()
             for s, level in previous.items():
                 if level is not None:
                     await self._call(
@@ -1612,6 +1757,65 @@ class AlertTTS:
                 await self._call("media_player", "volume_mute", s, is_volume_muted=True)
             for s in was_off:
                 await self._call("media_player", "turn_off", s)
+
+    async def _play_with_retries(
+        self,
+        group: str | None,
+        ready: list[str],
+        media: str,
+        voice: str,
+        voices: _Voices,
+        text: str,
+        mark: _Marks,
+    ) -> tuple[str, int, str]:
+        """Play ready audio, retrying as set. Returns (outcome, tries, voice).
+
+        Each try is one play on one route, so at most one wake-up sound per
+        try. The group goes first; when it fails or doesn't start, the next
+        try uses each speaker (and back). A try cut short repeats its route.
+        Retries use the backup voice's audio (if set), else the same audio.
+        """
+        retries = self.announce_retries
+        route = "group" if group else "speakers"
+        tries = 0
+        while True:
+            tries += 1
+            outcome = await self._attempt(route, media, group, ready, text, mark)
+            if outcome == PLAY_OK:
+                return outcome, tries, voice
+            switch = bool(group) and outcome in (PLAY_FAILED, PLAY_NOT_STARTED)
+            if retries == 0:
+                # Retries off: as before 0.9.0, a group that didn't play falls
+                # back to each speaker once, and nothing more.
+                if switch and route == "group" and tries == 1:
+                    _LOGGER.warning(
+                        "Speaker group %s: %s; announcing on each speaker",
+                        group,
+                        _PLAY_PROBLEM[outcome],
+                    )
+                    mark("group_fallback_ms")
+                    route = "speakers"
+                    continue
+                return outcome, tries, voice
+            if tries > retries:
+                return outcome, tries, voice
+            _LOGGER.warning(
+                "Announcement %s; trying again (%s of %s): %s",
+                _PLAY_PROBLEM[outcome],
+                tries,
+                retries,
+                text,
+            )
+            mark.note("retry_reason", outcome)
+            await asyncio.sleep(RETRY_PAUSE)
+            mark("retry_ms")
+            if switch:
+                route = "speakers" if route == "group" else "group"
+            new_media, new_voice = await voices.for_retry(voice)
+            if new_media is not None and new_voice is not None:
+                media, voice = new_media, new_voice
+                if voice == VOICE_BACKUP:
+                    mark.note("tts_used", "backup")
 
     def _prepare(self, timings: dict[str, Any], t0: float) -> None:
         """Wake the speakers (and, if chosen, connect the group) in the background.
@@ -1669,31 +1873,42 @@ class AlertTTS:
 
     async def _attempt(
         self,
+        route: str,
+        media: str,
         group: str | None,
-        group_ok: bool,
-        tts_entity: str,
         ready: list[str],
         text: str,
         mark: _Marks,
     ) -> str:
-        """One try: the speaker group if set, else (or if it fails) each speaker."""
-        if group and group_ok:
-            outcome = await self._speak_on_group(group, tts_entity, text, mark)
-            if outcome in (PLAY_OK, PLAY_SHORT):
-                # Cut short on the group: the retry uses the group again.
-                mark.note("route", "group")
-                return outcome
-            mark("group_fallback_ms")
-        mark.note("route", "group_fallback" if group else "speakers")
-        before = {s: self.hass.states.get(s) for s in ready}
+        """One play of ready audio, on the group or on each speaker."""
+        players = [group] if route == "group" and group else ready
+        if players == [group]:
+            mark.note("route", "group")
+        else:  # each speaker: a set group that isn't used is a fallback
+            mark.note("route", "group_fallback" if self.speaker_group else "speakers")
+        before = {p: self.hass.states.get(p) for p in players}
         started = time.monotonic()
         try:
-            await self._play(tts_entity, ready, text, mark)
+            await self._play_media(players, media, mark)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Announcement failed: %s", err)
+            _LOGGER.warning("Playing on %s failed: %s", ", ".join(players), err)
             return PLAY_FAILED
         self.last_spoken = text
-        return await self._wait_for_playback(ready, before, text, started, mark)
+        outcome = await self._wait_for_playback(
+            players,
+            before,
+            text,
+            started,
+            mark,
+            start_timeout=GROUP_START_TIMEOUT if route == "group" else None,
+        )
+        if outcome == PLAY_NOT_STARTED and route == "group":
+            _LOGGER.warning(
+                "Speaker group %s didn't start playing within %s s",
+                group,
+                GROUP_START_TIMEOUT,
+            )
+        return outcome
 
     async def _wait_awake(self, players: list[str], mark: _Marks) -> None:
         """Wait (up to the wake-up time) until every speaker is on and stays on.
@@ -1734,59 +1949,89 @@ class AlertTTS:
             ],
         )
 
-    async def _speak_on_group(
-        self, group: str, tts_entity: str, text: str, mark: _Marks
-    ) -> str:
-        """Play on the speaker group (all speakers in sync).
-
-        Returns PLAY_NOT_STARTED or PLAY_FAILED if the group failed or didn't
-        start playing in time, so the caller announces on each speaker instead.
-        """
-        before = {group: self.hass.states.get(group)}
-        started = time.monotonic()
-        try:
-            await self._play(tts_entity, [group], text, mark)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning(
-                "Speaker group %s failed (%s); announcing on each speaker", group, err
-            )
-            return PLAY_FAILED
-        outcome = await self._wait_for_playback(
-            [group], before, text, started, mark, start_timeout=GROUP_START_TIMEOUT
-        )
-        if outcome == PLAY_NOT_STARTED:
-            _LOGGER.warning(
-                "Speaker group %s didn't start playing within %s s; announcing on "
-                "each speaker",
-                group,
-                GROUP_START_TIMEOUT,
-            )
-            return outcome
-        self.last_spoken = text
-        return outcome
-
-    async def _play(
-        self, tts_entity: str, players: list[str], text: str, mark: _Marks
-    ) -> None:
-        """One text-to-speech call that plays on all `players` at once."""
-        data: dict[str, Any] = {
-            "media_player_entity_id": players,
-            "message": text,
-            "cache": True,
-        }
-        language = self.options.get(CONF_TTS_LANGUAGE)
-        if language and tts_entity == self.options.get(CONF_TTS_ENTITY):
-            data["language"] = language  # the language is set for the main voice
+    async def _play_media(self, players: list[str], media: str, mark: _Marks) -> None:
+        """Tell `players` to play audio that has already been made."""
         mark("tts_call_ms")
-        async with asyncio.timeout(TTS_TIMEOUT):
+        async with asyncio.timeout(PLAY_CALL_TIMEOUT):
             await self.hass.services.async_call(
-                "tts",
-                "speak",
-                data,
-                target={ATTR_ENTITY_ID: tts_entity},
+                "media_player",
+                "play_media",
+                {
+                    ATTR_ENTITY_ID: players,
+                    "media_content_id": media,
+                    "media_content_type": "music",
+                    "announce": True,
+                },
                 blocking=True,
             )
         mark("tts_done_ms")
+
+    # -- the recorded phrase ---------------------------------------------------------
+    def clip_media(self) -> str | None:
+        """Media source id of the recorded fixed phrase, if there is one."""
+        if not self.clip:
+            return None
+        engines = (
+            self.clip.get("engine"),
+            self.options.get(CONF_TTS_ENTITY),
+            self.options.get(CONF_TTS_BACKUP),
+        )
+        for engine in dict.fromkeys(e for e in engines if e):
+            # The voice only names the stream; the saved file is what plays.
+            try:
+                return audio.clip_media_id(self.hass, engine, self.clip["path"])
+            except Exception as err:  # noqa: BLE001 - try the next voice
+                _LOGGER.warning(
+                    "The recorded phrase can't be played via %s: %s", engine, err
+                )
+        return None
+
+    async def async_refresh_clip(self) -> None:
+        """Record the fixed phrase in advance (main voice, else the backup).
+
+        Kept on disk and played when no voice can make the audio (for example
+        when the internet is down). Recorded again when the phrase or the
+        voices change; a failed attempt keeps the old recording. Never raises.
+        """
+        if self._stopping:
+            return
+        main = self.options.get(CONF_TTS_ENTITY)
+        backup = self.options.get(CONF_TTS_BACKUP)
+        engines = list(dict.fromkeys(e for e in (main, backup) if e))
+        text = self._fixed_phrase()
+        async with self._clip_lock:
+            if (
+                self.clip
+                and self.clip.get("text") == text
+                and self.clip.get("engine") in engines
+            ):
+                return
+            for engine in engines:
+                language = (
+                    self.options.get(CONF_TTS_LANGUAGE) if engine == main else None
+                )
+                try:
+                    async with asyncio.timeout(BACKUP_GENERATE_TIMEOUT):
+                        _media, data, extension = await audio.generate(
+                            self.hass, engine, text, language
+                        )
+                    path = await self.hass.async_add_executor_job(
+                        audio.save_clip,
+                        self.clip_folder,
+                        self.clip_name,
+                        data,
+                        extension,
+                        {"engine": engine, "text": text},
+                    )
+                except Exception as err:  # noqa: BLE001 - try the next voice
+                    _LOGGER.info("Recording the phrase with %s failed: %s", engine, err)
+                    continue
+                self.clip = {"engine": engine, "text": text, "path": path}
+                _LOGGER.debug("Recorded the fixed phrase with %s", engine)
+                return
+            _LOGGER.warning(
+                "Couldn't record the fixed phrase in advance; will try again later"
+            )
 
     async def _call(
         self, domain: str, service: str, entity_id: str, **data: Any

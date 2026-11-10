@@ -236,11 +236,13 @@ Leave this empty to keep the normal behaviour (each speaker on its own).
 How it works and its safety net:
 - The announcement plays on the group, so every speaker starts together.
 - If the group is **unavailable** (for example a speaker in it is offline;
-  Cast groups can disappear from Home Assistant then), the **text-to-speech
-  call fails**, or the group **doesn't start playing within 10 seconds**, the
-  alert is spoken on each speaker in *Speakers* instead, as without a group.
-  Emergency alerts use the same fallback. In the rare case the group starts
-  very late you may hear the alert twice; it is never skipped.
+  Cast groups can disappear from Home Assistant then), each speaker in
+  *Speakers* is used instead, as without a group.
+- If the group **fails to play** or **doesn't start playing within 10
+  seconds**, the next try (see *Retries*) uses each speaker, and the one after
+  that the group again. With *Retries* at 0, each speaker is still tried once.
+  Emergency alerts work the same way. In the rare case the group starts very
+  late you may hear the alert twice; it is never skipped.
 - If you pick only a group and leave *Speakers* empty, the group is used like
   a normal speaker (volume is set on the group, no fallback).
 - The history and **Last alert** *timings* show which way was used
@@ -278,15 +280,22 @@ when the group is connected, so the sound comes a few seconds before the
 announcement. That's why it is off by default. Turn it on if you don't mind
 the sound, or your speakers don't make one.
 
-### Retries if an announcement fails or is cut short *(default 1)*
+### Retries if an announcement fails or is cut short *(default 1, up to 5)*
 
-After speaking, Push Alert TTS watches the speaker (or group) and says the
+The spoken audio is always made first, and only then are the speakers told to
+play it (see [How an announcement is made](#how-an-announcement-is-made)).
+After playing, Push Alert TTS watches the speaker (or group) and plays the
 alert again, up to this many extra times, if:
-- the text-to-speech call **failed** (for example the voice service didn't
-  answer),
+- the speaker **wouldn't play** it (an error, or no answer within 20 seconds),
 - the speaker **never started playing**, or
 - it **stopped far sooner than the text needs** (cut short), for example
   because a speaker dropped out.
+
+Each try plays once on one route (the group, or each speaker), so each try
+makes at most one wake-up sound. When the group fails or doesn't start, the
+next try uses each speaker (and the one after that the group again); a try
+that was cut short repeats the same route. Retries use the *Backup
+text-to-speech engine*'s audio if one is set.
 
 A speaker briefly showing *buffering* in the middle of an announcement is
 normal and isn't treated as the end. If every try fails, the **Phone / fallback
@@ -304,22 +313,55 @@ hear every alert twice.
 The voice to use, e.g. `tts.google_en_com` or *Home Assistant
 Cloud*. See checklist item 4 if the list is empty.
 
-### Backup text-to-speech engine *(optional)*
+### Backup text-to-speech engine *(optional, recommended)*
 
-A second voice, used only when an announcement is retried (see *Retries*
-above), so a problem with the main voice service can't stop the alert. Pick a
-voice from a **different** service from the main one: two Google Translate
-voices (`tts.google_en_com` and `tts.google_en_co_za`) use the same service and
-fail together. A voice that runs on your own Home Assistant, such as
-[Piper](https://www.home-assistant.io/integrations/piper/) (installed via the
-[Wyoming protocol](https://www.home-assistant.io/integrations/wyoming/)),
-keeps working even when a cloud service is down. Other choices are
-[Home Assistant Cloud](https://www.home-assistant.io/integrations/cloud/) or
-[OpenAI](https://www.home-assistant.io/integrations/openai_conversation/).
+A second voice, used when the main voice can't make the audio in time (it
+gets 8 seconds; if it hasn't finished after 3 seconds the backup starts too
+and whichever finishes first is used), and for retries. So a slow or broken
+voice service can't stop the alert.
 
-Leave empty to retry with the main voice. The *Language* setting below applies
-to the main voice only; the backup uses its own default language. If
-*Retries* is 0 the backup is never used.
+Pick a voice that works **without the internet** if you can: most voices,
+including Google Translate, need the internet, and when your connection or
+DNS is struggling they hang. A voice that runs on your own Home Assistant
+keeps working then. The usual choice is
+[Piper](https://www.home-assistant.io/integrations/piper/): install the
+**Piper** app (add-on) from **Settings → Apps → App store**, start it, then
+add the [Wyoming Protocol](https://www.home-assistant.io/integrations/wyoming/)
+integration it offers under **Settings → Devices & services** (this creates
+`tts.piper`). Pick a voice in the Piper app's settings. On a Raspberry Pi 4 use
+a **medium** voice (for example `en_GB-cori-medium`, about 3 seconds per
+alert): the **high** voices take 15 seconds or more there, and a speaker can
+give up waiting.
+
+If you can't run a local voice, pick one from a **different** service from the
+main one: two Google Translate voices (`tts.google_en_com` and
+`tts.google_en_co_za`) use the same service and fail together. Other choices
+are [Home Assistant Cloud](https://www.home-assistant.io/integrations/cloud/)
+or [OpenAI](https://www.home-assistant.io/integrations/openai_conversation/).
+
+Leave empty to use only the main voice. The *Language* setting below applies
+to the main voice only; the backup uses its own default language.
+
+### How an announcement is made
+
+1. **The audio is made first.** The main voice makes the spoken audio (the
+   backup voice joins in if the main one is slow, see above). Nothing is sent
+   to the speakers yet, so a slow or unreachable voice service can't leave a
+   speaker waiting, timing out, or making wake-up sounds for nothing.
+2. **If no voice can make it**, the *Fixed phrase* recorded in advance is
+   used (see below), and the alert's full text is sent to the *Phone /
+   fallback notification*.
+3. **The speakers play the ready audio**, with the retries above if needed.
+4. **If it still can't be played**, the *Phone / fallback notification* is sent
+   with the text and the reason.
+
+**The recorded fixed phrase.** Push Alert TTS records the *Fixed phrase*
+(main voice, else the backup) and keeps the recording in
+`/config/push_alert_tts/`. It is recorded when Home Assistant starts and again
+when the phrase or the voices change (checked every hour, so a failed
+recording is tried again). A recording that fails keeps the old one. It plays
+even when no voice service works, for example during an internet outage, so
+you at least hear that an alert came in.
 
 ### Language *(optional)*
 
@@ -348,6 +390,8 @@ In every mode:
 ### Fixed phrase
 
 The sentence used by *Fixed phrase* mode, and the fallback for the other modes.
+It is also recorded in advance and played when no voice can make the audio
+(see [How an announcement is made](#how-an-announcement-is-made)).
 Default: `Pushover alert received, please check`.
 
 ### Regular expression (only for "Part of the message")
@@ -989,7 +1033,9 @@ Fired when alerts are acknowledged from Home Assistant.
 | Only the first word or two is heard | Update to 0.9.0 or later: before that, a speaker briefly showing *buffering* was taken as the end of the announcement and a speaker that had been off was switched off again mid-sentence. Check *timings*: `played_s` should be a few seconds and `outcome` `ok`. |
 | Alerts sometimes arrive late | Check the **Pushover connected** sensor's *drops*, *last_drop* and *last_drop_reason*: a dropped connection explains a delay of up to a minute or two. If *drops* stays 0, the delay is before Pushover (for example e-mail delivery). |
 | A short sound plays before announcements | That's the speaker group connecting early. Turn off *Connect the speaker group early*. |
-| Every alert is heard twice | Your speaker probably doesn't report *playing*. Set **Retries** to 0 ([section 6](#retries-if-an-announcement-fails-or-is-cut-short-default-1)). |
+| Wake-up sounds but no speech, then a phone notification | The speakers couldn't be made to play. *timings* `retry_reason` / `outcome` say why. If `voice_failed` lists `main`, the main voice service was slow or down (often the internet or DNS): set a local *Backup text-to-speech engine*. |
+| A short phrase was spoken instead of the alert | No voice could make the audio, so the recorded *Fixed phrase* was played (`voice: clip`); the full text went to your phone. Check your internet connection and the voices. |
+| Every alert is heard twice | Your speaker probably doesn't report *playing*. Set **Retries** to 0 ([section 6](#retries-if-an-announcement-fails-or-is-cut-short-default-1-up-to-5)). |
 | Speaker stays loud after an announcement | It couldn't report its volume before speaking. Set the volume once in the speaker's own app. |
 | Need help | Open an [issue](https://github.com/VibeOps-ZA/push-alert-tts/issues) and attach a diagnostics download (device page → ⋮ → Download diagnostics). Turn on debug logging via **⋮ → Enable debug logging**, reproduce, then turn it off to download the log. |
 
@@ -1203,18 +1249,21 @@ milliseconds after the alert reached Home Assistant unless noted:
 | `text_ms` | Normal text worked out |
 | `ai_done_ms` | AI answered (or gave up) |
 | `speak_start_ms` | Announcement started (after any announcement already playing) |
-| `tts_call_ms` / `tts_done_ms` | Text-to-speech asked / audio ready |
+| `audio_ready_ms` | The spoken audio was made (before any speaker was asked to play) |
+| `voice` | Not a time: which audio was played: `main`, `backup` or `clip` (the recorded fixed phrase) |
+| `voice_failed` | Not a time: the voices that couldn't make the audio in time (`main`, `backup`) |
+| `tts_call_ms` / `tts_done_ms` | The speakers were asked to play / accepted the ready audio |
 | `awake_ms` | Every speaker in *Speakers* was awake (only with *Wait for speakers to wake up* above 0) |
 | `awake_timeout` | Not a time: `true` when the speakers weren't all awake in time and it spoke anyway |
 | `playback_start_ms` / `playback_end_ms` | Speaker started / finished playing (only if the speaker reports it). Finished means stopped for at least 2 seconds; *buffering* counts as playing |
 | `played_s` | Not a time after the alert: seconds the speaker was seen playing |
 | `retry_ms` | The last retry started (only when one was needed) |
-| `tts_used` | Not a time: `backup` when a retry used the *Backup text-to-speech engine* |
+| `tts_used` | Not a time: `backup` when a retry used the *Backup text-to-speech engine*'s audio |
 | `prepared_ms` | The speakers were woken early, while the alert was being worded |
 | `group_preconnected` | Not a time: `true` when the speaker group was connected early (*Connect the speaker group early*) |
-| `attempts` / `retry_reason` / `outcome` | Not times: how many tries; why the last retry was needed; how the last try went: `ok`, `cut_short`, `not_started` or `failed` |
-| `group_fallback_ms` | The speaker group didn't play, so each speaker was used instead (only with a *Speaker group*) |
-| `route` | Not a time: `group` (played on the speaker group), `group_fallback` (group set but each speaker used) or `speakers` (no group set) |
+| `attempts` / `retry_reason` / `outcome` | Not times: how many tries; why the last retry was needed; how the last try went: `ok`, `cut_short`, `not_started` or `failed`, or `no_audio` when no voice could make the audio and there was no recorded phrase |
+| `group_fallback_ms` | With *Retries* at 0: the speaker group didn't play, so each speaker was used instead |
+| `route` | Not a time: the last try's route: `group` (played on the speaker group), `group_fallback` (a group is set but each speaker was used) or `speakers` (no group set) |
 
 `ai_reason` values: `llm_unreachable`, `llm_unreachable_recently` (skipped
 for a minute after a failed connection), `llm_timeout`, `llm_http_error`,
