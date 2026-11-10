@@ -20,6 +20,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
+from homeassistant.exceptions import TemplateError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -35,6 +36,7 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
     TextSelectorType,
 )
+from homeassistant.helpers.template import Template
 
 from . import api
 from .ai_wording import DEFAULT_INSTRUCTIONS, keep_alive_value
@@ -65,17 +67,25 @@ from .const import (
     CONF_AI_WAKE_ENTITY,
     CONF_ANNOUNCE_RETRIES,
     CONF_APP_FILTER,
+    CONF_COMBINE,
+    CONF_DELIVERY_SECTION,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
     CONF_EMERGENCY_MESSAGE,
     CONF_EXPAND_ABBREVIATIONS,
     CONF_FALLBACK_NOTIFY,
     CONF_FIXED_MESSAGE,
+    CONF_GATHER,
     CONF_HISTORY_DAYS,
+    CONF_LINK_LABEL,
     CONF_MAX_LENGTH,
     CONF_MESSAGE_MODE,
     CONF_MIN_PRIORITY,
+    CONF_MISSED_BELL,
     CONF_MULTIPLE_MESSAGE,
+    CONF_MUST_HEAR,
+    CONF_NIGHT_CONDITION,
+    CONF_NIGHT_MUST_HEAR,
     CONF_OFFLINE_ALERT_DELAY,
     CONF_PART_MAX_LENGTH,
     CONF_PRECONNECT_GROUP,
@@ -88,11 +98,16 @@ from .const import (
     CONF_SPEAKER_GROUP,
     CONF_SPEAKERS,
     CONF_SPOKEN_TEMPLATE,
+    CONF_STAY_CONNECTED,
     CONF_STORE_PASSWORD,
     CONF_TIDY_TEXT,
     CONF_TTS_BACKUP,
+    CONF_TTS_BACKUP_TIMEOUT,
+    CONF_TTS_BACKUP_VOICE,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
+    CONF_TTS_RETRIES,
+    CONF_TTS_TIMEOUT,
     CONF_TWOFA,
     CONF_USER_KEY,
     CONF_WAKE_WAIT,
@@ -103,10 +118,13 @@ from .const import (
     DEFAULT_AI_OFFLINE_ALERT,
     DEFAULT_AI_TIMEOUT,
     DEFAULT_ANNOUNCE_RETRIES,
+    DEFAULT_COMBINE,
     DEFAULT_DEVICE_NAME,
     DEFAULT_EMERGENCY_MESSAGE,
     DEFAULT_FIXED_MESSAGE,
+    DEFAULT_GATHER,
     DEFAULT_HISTORY_DAYS,
+    DEFAULT_LINK_LABEL,
     DEFAULT_MAX_LENGTH,
     DEFAULT_MIN_PRIORITY,
     DEFAULT_MULTIPLE_MESSAGE,
@@ -114,14 +132,24 @@ from .const import (
     DEFAULT_PART_MAX_LENGTH,
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
+    DEFAULT_STAY_CONNECTED,
+    DEFAULT_TTS_BACKUP_TIMEOUT,
+    DEFAULT_TTS_RETRIES,
+    DEFAULT_TTS_TIMEOUT,
     DEFAULT_WAKE_WAIT,
+    DELIVERY_OPTION_KEYS,
     DOMAIN,
     MAX_AI_CONTEXT,
     MAX_AI_GPU_LAYERS,
     MAX_AI_OFFLINE_ALERT,
     MAX_AI_TIMEOUT,
     MAX_ANNOUNCE_RETRIES,
+    MAX_GATHER,
     MAX_HISTORY_DAYS,
+    MAX_STAY_CONNECTED,
+    MAX_TTS_BACKUP_TIMEOUT,
+    MAX_TTS_RETRIES,
+    MAX_TTS_TIMEOUT,
     MAX_WAKE_WAIT,
     MESSAGE_MODES,
     MODE_FIXED,
@@ -373,11 +401,22 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
             else:
                 ai = dict(ai)
                 memory_text = ai.pop(CONF_AI_MEMORY, None) or ""
+            delivery = user_input.pop(CONF_DELIVERY_SECTION, None)
+            if delivery is None:  # section not sent: keep these settings as they are
+                delivery = {
+                    k: previous[k] for k in DELIVERY_OPTION_KEYS if k in previous
+                }
             current = {
                 **user_input,
                 **{k: v for k, v in ai.items() if k in AI_OPTION_KEYS},
+                **{
+                    k: v
+                    for k, v in dict(delivery).items()
+                    if k in DELIVERY_OPTION_KEYS
+                },
             }
             errors.update(_check_ai(current))
+            errors.update(_check_delivery(self.hass, current))
             if current.get(CONF_MESSAGE_MODE) == MODE_REGEX:
                 if not current.get(CONF_REGEX):
                     errors[CONF_REGEX] = "regex_required"
@@ -462,6 +501,24 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                     CONF_TTS_LANGUAGE,
                     description={"suggested_value": current.get(CONF_TTS_LANGUAGE)},
                 ): str,
+                vol.Optional(
+                    CONF_TTS_TIMEOUT, default=opt(CONF_TTS_TIMEOUT, DEFAULT_TTS_TIMEOUT)
+                ): _seconds(1, MAX_TTS_TIMEOUT),
+                vol.Optional(
+                    CONF_TTS_RETRIES, default=opt(CONF_TTS_RETRIES, DEFAULT_TTS_RETRIES)
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=MAX_TTS_RETRIES, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_TTS_BACKUP_VOICE,
+                    description={"suggested_value": current.get(CONF_TTS_BACKUP_VOICE)},
+                ): str,
+                vol.Optional(
+                    CONF_TTS_BACKUP_TIMEOUT,
+                    default=opt(CONF_TTS_BACKUP_TIMEOUT, DEFAULT_TTS_BACKUP_TIMEOUT),
+                ): _seconds(1, MAX_TTS_BACKUP_TIMEOUT),
                 vol.Required(
                     CONF_MESSAGE_MODE, default=opt(CONF_MESSAGE_MODE, MODE_FIXED)
                 ): SelectSelector(
@@ -600,6 +657,10 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
                         mode=NumberSelectorMode.BOX,
                     )
                 ),
+                vol.Optional(CONF_DELIVERY_SECTION): section(
+                    _delivery_schema(current, opt),
+                    {"collapsed": not current.get(CONF_COMBINE)},
+                ),
                 vol.Optional(CONF_AI_SECTION): section(
                     _ai_schema(current, opt, memory_text),
                     {"collapsed": not current.get(CONF_AI_ENABLED)},
@@ -628,6 +689,59 @@ def _check_ai(options: Mapping[str, Any]) -> dict[str, str]:
         except re.error:
             return {"base": "ai_invalid_pattern"}
     return {}
+
+
+def _check_delivery(hass: Any, options: Mapping[str, Any]) -> dict[str, str]:
+    """Errors for the combining and delivery section (shown at the top)."""
+    speakers = set(options.get(CONF_SPEAKERS) or [])
+    for key in (CONF_MUST_HEAR, CONF_NIGHT_MUST_HEAR):
+        if not set(options.get(key) or []) <= speakers:
+            return {"base": "must_hear_not_speaker"}
+    source = (options.get(CONF_NIGHT_CONDITION) or "").strip()
+    if source:
+        try:
+            Template(source, hass).ensure_valid()
+        except TemplateError:
+            return {"base": "invalid_night_condition"}
+    return {}
+
+
+def _delivery_schema(current: Mapping[str, Any], opt: Any) -> vol.Schema:
+    """The collapsible combining and delivery section."""
+    speakers = EntitySelector(EntitySelectorConfig(domain="media_player", multiple=True))
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_COMBINE, default=bool(opt(CONF_COMBINE, DEFAULT_COMBINE))
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_GATHER, default=opt(CONF_GATHER, DEFAULT_GATHER)
+            ): _seconds(0, MAX_GATHER),
+            vol.Optional(
+                CONF_STAY_CONNECTED,
+                default=opt(CONF_STAY_CONNECTED, DEFAULT_STAY_CONNECTED),
+            ): _seconds(0, MAX_STAY_CONNECTED),
+            vol.Optional(
+                CONF_MUST_HEAR, default=opt(CONF_MUST_HEAR, [])
+            ): speakers,
+            vol.Optional(
+                CONF_NIGHT_MUST_HEAR, default=opt(CONF_NIGHT_MUST_HEAR, [])
+            ): speakers,
+            vol.Optional(
+                CONF_NIGHT_CONDITION,
+                description={"suggested_value": current.get(CONF_NIGHT_CONDITION)},
+            ): TextSelector(TextSelectorConfig(multiline=True)),
+            vol.Optional(
+                CONF_LINK_LABEL,
+                description={
+                    "suggested_value": current.get(CONF_LINK_LABEL, DEFAULT_LINK_LABEL)
+                },
+            ): str,
+            vol.Optional(
+                CONF_MISSED_BELL, default=bool(opt(CONF_MISSED_BELL, False))
+            ): BooleanSelector(),
+        }
+    )
 
 
 def _seconds(minimum: int, maximum: int) -> NumberSelector:

@@ -40,6 +40,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.template import Template
 from homeassistant.util import dt as dt_util
 
 # ai_wording.py, not llm.py: HA 2026.10+ loads a file named llm.py as an LLM tools platform
@@ -61,6 +62,7 @@ from .const import (
     AI_WAKE_INTERVAL,
     BACKUP_GENERATE_TIMEOUT,
     BACKUP_HEAD_START,
+    CLIP_GENERATE_TIMEOUT,
     CLIP_REFRESH_INTERVAL,
     CONF_AI_API,
     CONF_AI_API_KEY,
@@ -82,19 +84,31 @@ from .const import (
     CONF_AI_URL,
     CONF_AI_WAKE_ENTITY,
     CONF_ANNOUNCE_RETRIES,
+    CONF_COMBINE,
     CONF_EMERGENCY_MESSAGE,
     CONF_FALLBACK_NOTIFY,
+    CONF_GATHER,
     CONF_HISTORY_DAYS,
+    CONF_LINK_LABEL,
     CONF_MESSAGE_MODE,
+    CONF_MISSED_BELL,
+    CONF_MUST_HEAR,
+    CONF_NIGHT_CONDITION,
+    CONF_NIGHT_MUST_HEAR,
     CONF_OFFLINE_ALERT_DELAY,
     CONF_PRECONNECT_GROUP,
     CONF_REPEAT_INTERVAL,
     CONF_REPEAT_MAX,
     CONF_SPEAKER_GROUP,
     CONF_SPEAKERS,
+    CONF_STAY_CONNECTED,
     CONF_TTS_BACKUP,
+    CONF_TTS_BACKUP_TIMEOUT,
+    CONF_TTS_BACKUP_VOICE,
     CONF_TTS_ENTITY,
     CONF_TTS_LANGUAGE,
+    CONF_TTS_RETRIES,
+    CONF_TTS_TIMEOUT,
     CONF_WAKE_WAIT,
     DEFAULT_AI_AUTO_BACKFILL,
     DEFAULT_AI_EMERGENCY_TIMEOUT,
@@ -102,11 +116,16 @@ from .const import (
     DEFAULT_AI_OFFLINE_ALERT,
     DEFAULT_AI_TIMEOUT,
     DEFAULT_ANNOUNCE_RETRIES,
+    DEFAULT_COMBINE,
     DEFAULT_EMERGENCY_MESSAGE,
+    DEFAULT_GATHER,
     DEFAULT_HISTORY_DAYS,
+    DEFAULT_LINK_LABEL,
     DEFAULT_OFFLINE_ALERT_DELAY,
     DEFAULT_REPEAT_INTERVAL,
     DEFAULT_REPEAT_MAX,
+    DEFAULT_STAY_CONNECTED,
+    DEFAULT_TTS_RETRIES,
     DEFAULT_VOLUME,
     DEFAULT_WAKE_WAIT,
     DOMAIN,
@@ -121,9 +140,14 @@ from .const import (
     MAX_AI_OFFLINE_ALERT,
     MAX_AI_TIMEOUT,
     MAX_ANNOUNCE_RETRIES,
+    MAX_GATHER,
     MAX_HISTORY_DAYS,
     MAX_MESSAGE_INPUT,
+    MAX_STAY_CONNECTED,
     MAX_TITLE_INPUT,
+    MAX_TTS_BACKUP_TIMEOUT,
+    MAX_TTS_RETRIES,
+    MAX_TTS_TIMEOUT,
     MAX_WAKE_WAIT,
     MESSAGE_FIELDS,
     MODE_REGEX,
@@ -139,6 +163,7 @@ from .const import (
     SIGNAL_UPDATE,
     SPEECH_CHARS_PER_SECOND,
     TEXT_TIMEOUT,
+    VOICE_RETRY_PAUSE,
     WAKE_TIMEOUT,
 )
 from .memory import read_memory, split_lines, write_memory
@@ -151,6 +176,7 @@ from .spoken import (
     clean,
     should_announce,
 )
+from .spool import AlertSpool, SpoolItem, find_link
 
 SOURCE_AI = "ai"
 SOURCE_FILTER = "filter"  # the normal (non-AI) spoken text
@@ -266,6 +292,7 @@ def review_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "ai_seconds": row.get("ai_seconds"),
         "ai_server": row.get("ai_server"),
         "backfilled": bool(row.get("ai_backfilled")),
+        "link": row.get("link") or find_link(row, DEFAULT_LINK_LABEL),
     }
 
 
@@ -412,6 +439,17 @@ def read_history(
     return out
 
 
+def _seconds_option(value: Any, default: float, maximum: float) -> float:
+    """A seconds option (fractions allowed), limited to 0..maximum."""
+    if value in (None, ""):
+        return default
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(seconds, maximum))
+
+
 def _ms_since(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
@@ -434,22 +472,37 @@ class _Marks:
 
 
 class _Voices:
-    """Makes the audio for one announcement, before any speaker plays it.
+    """Makes the audio for one piece of speech, before any speaker plays it.
 
-    The main voice gets GENERATE_TIMEOUT seconds. If it hasn't finished after
-    BACKUP_HEAD_START seconds, the backup voice (if set) starts too and the
-    first to finish is used. If neither works, the recorded phrase is used.
+    The main voice is preferred: it gets ``tts_timeout`` seconds per try and
+    ``tts_retries`` extra tries (for a poor internet connection). Once it has
+    failed a try, or is still busy after BACKUP_HEAD_START seconds, the backup
+    voice (if set) starts making its audio too, so that audio is ready if the
+    main voice gives up; it is only used then. If neither works, the recorded
+    phrase is used.
     """
 
-    def __init__(self, runtime: AlertTTS, text: str, main: str, mark: _Marks) -> None:
+    def __init__(
+        self,
+        runtime: AlertTTS,
+        text: str,
+        main: str,
+        mark: Any,
+        *,
+        language: str | None = None,
+        backup: str | None = None,
+    ) -> None:
         self.runtime = runtime
         self.hass = runtime.hass
         self.text = text
         self.main = main
-        backup = runtime.options.get(CONF_TTS_BACKUP) or None
+        self.language = language or runtime.options.get(CONF_TTS_LANGUAGE)
+        if backup is None:
+            backup = runtime.options.get(CONF_TTS_BACKUP) or None
         self.backup = backup if backup != main else None
         self.mark = mark
         self.media: dict[str, str] = {}  # voice -> media source id
+        self.data: dict[str, tuple[bytes, str]] = {}  # voice -> (audio, extension)
         self.failed: list[str] = []
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -462,52 +515,102 @@ class _Voices:
 
     def _task(self, voice: str) -> asyncio.Task:
         if voice not in self._tasks:
-            engine = self.main if voice == VOICE_MAIN else self.backup
-            limit = GENERATE_TIMEOUT if voice == VOICE_MAIN else BACKUP_GENERATE_TIMEOUT
-            self._tasks[voice] = asyncio.create_task(self._make(voice, engine, limit))
+            make = self._make_main() if voice == VOICE_MAIN else self._make_backup()
+            self._tasks[voice] = asyncio.create_task(make)
         return self._tasks[voice]
 
-    async def _make(self, voice: str, engine: str | None, limit: float) -> str | None:
-        if not engine:
+    def start_backup(self) -> None:
+        """Start making the backup audio (if there is a backup voice)."""
+        if self.backup:
+            self._task(VOICE_BACKUP)
+
+    async def _make_main(self) -> str | None:
+        tries = 1 + self.runtime.tts_retries
+        language = self.language
+        for attempt in range(1, tries + 1):
+            reason = await self._try(
+                VOICE_MAIN, self.main, language, None, self.runtime.tts_timeout
+            )
+            if reason is None:
+                return self.media[VOICE_MAIN]
+            self.start_backup()  # ready in case this voice gives up
+            if attempt < tries:
+                _LOGGER.info(
+                    "The main voice (%s) failed try %s of %s (%s); trying again",
+                    self.main,
+                    attempt,
+                    tries,
+                    reason,
+                )
+                self.mark.note("main_voice_tries", attempt + 1)
+                await asyncio.sleep(VOICE_RETRY_PAUSE)
+            else:
+                _LOGGER.warning(
+                    "The main voice (%s) couldn't be used after %s tries: %s",
+                    self.main,
+                    tries,
+                    reason,
+                )
+        self.failed.append(VOICE_MAIN)
+        self.mark.note("voice_failed", list(self.failed))
+        return None
+
+    async def _make_backup(self) -> str | None:
+        if not self.backup:
             return None
-        language = (
-            self.runtime.options.get(CONF_TTS_LANGUAGE) if voice == VOICE_MAIN else None
+        voice_name = (self.runtime.options.get(CONF_TTS_BACKUP_VOICE) or "").strip()
+        options = {"voice": voice_name} if voice_name else None
+        reason = await self._try(
+            VOICE_BACKUP, self.backup, None, options, self.runtime.tts_backup_timeout
         )
+        if reason is None:
+            return self.media[VOICE_BACKUP]
+        _LOGGER.warning(
+            "The backup voice (%s) couldn't be used: %s", self.backup, reason
+        )
+        self.failed.append(VOICE_BACKUP)
+        self.mark.note("voice_failed", list(self.failed))
+        return None
+
+    async def _try(
+        self,
+        voice: str,
+        engine: str | None,
+        language: str | None,
+        options: dict[str, Any] | None,
+        limit: float,
+    ) -> str | None:
+        """One try. Returns None when it worked, else the reason it didn't."""
+        if not engine:
+            return "no voice selected"
         try:
             async with asyncio.timeout(limit):
-                media, _data, _ext = await audio.generate(
-                    self.hass, engine, self.text, language
+                media, data, extension = await audio.generate(
+                    self.hass, engine, self.text, language, options
                 )
-        except Exception as err:  # noqa: BLE001 - any failure: use another voice
-            reason = "too slow" if isinstance(err, TimeoutError) else str(err)
-            _LOGGER.warning(
-                "The %s voice (%s) couldn't be used: %s", voice, engine, reason
-            )
-            self.failed.append(voice)
-            self.mark.note("voice_failed", list(self.failed))
-            return None
+        except Exception as err:  # noqa: BLE001 - any failure: try again / another
+            return "too slow" if isinstance(err, TimeoutError) else str(err) or "error"
         self.media[voice] = media
-        return media
+        self.data[voice] = (data, extension)
+        return None
+
+    async def made(self, voice: str) -> bool:
+        """Wait for one voice's audio; True if it was made."""
+        if voice == VOICE_BACKUP and not self.backup:
+            return False
+        return bool(await self._task(voice))
 
     async def first(self) -> tuple[str | None, str | None]:
-        """The first audio that can be played, and which voice made it."""
+        """The audio to play, and which voice made it (main preferred)."""
         main = self._task(VOICE_MAIN)
         if self.backup:
             done, _ = await asyncio.wait({main}, timeout=BACKUP_HEAD_START)
-            if main in done and main.result():
-                return self._ready(main.result(), VOICE_MAIN)
-            pending = {main, self._task(VOICE_BACKUP)}
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    if task.result():
-                        voice = VOICE_MAIN if task is main else VOICE_BACKUP
-                        return self._ready(task.result(), voice)
-            return self._clip()
+            if not done:
+                self.start_backup()  # slow today: have the backup ready
         if await main:
             return self._ready(main.result(), VOICE_MAIN)
+        if self.backup and await self._task(VOICE_BACKUP):
+            return self._ready(self.media[VOICE_BACKUP], VOICE_BACKUP)
         return self._clip()
 
     def _ready(self, media: str, voice: str) -> tuple[str, str]:
@@ -537,6 +640,13 @@ class _Voices:
             self._tasks.pop(VOICE_MAIN, None)
             if media := await self._task(VOICE_MAIN):
                 return media, VOICE_MAIN
+        return None, None
+
+
+class _NoRetryVoices:
+    """For audio made elsewhere (a joined announcement): retries replay it."""
+
+    async def for_retry(self, current: str) -> tuple[str | None, str | None]:
         return None, None
 
 
@@ -598,6 +708,8 @@ class AlertTTS:
         self.ai_checked = False  # reachability known (checked or an alert tried)
         self.last_ai: dict[str, Any] | None = None  # last AI attempt
         self.review: deque[dict[str, Any]] = deque(maxlen=AI_REVIEW_MAX)
+        # Combined announcements (used when "Combine alerts" is on).
+        self.spool = AlertSpool(self)
 
     # -- options (read live, so changes apply without a reload) ----------------
     @property
@@ -626,6 +738,79 @@ class AlertTTS:
             self.options.get(CONF_ANNOUNCE_RETRIES, DEFAULT_ANNOUNCE_RETRIES)
         )
         return max(0, min(value, MAX_ANNOUNCE_RETRIES))
+
+    @property
+    def tts_timeout(self) -> float:
+        """Seconds per try of the main voice."""
+        value = api.as_int(self.options.get(CONF_TTS_TIMEOUT))
+        return max(1, min(value, MAX_TTS_TIMEOUT)) if value else GENERATE_TIMEOUT
+
+    @property
+    def tts_retries(self) -> int:
+        """Extra tries of the main voice before the backup is used."""
+        value = self.options.get(CONF_TTS_RETRIES)
+        value = DEFAULT_TTS_RETRIES if value in (None, "") else api.as_int(value)
+        return max(0, min(value, MAX_TTS_RETRIES))
+
+    @property
+    def tts_backup_timeout(self) -> float:
+        """Seconds the backup voice may take (a local voice can be slow)."""
+        value = api.as_int(self.options.get(CONF_TTS_BACKUP_TIMEOUT))
+        if not value:
+            return BACKUP_GENERATE_TIMEOUT
+        return max(1, min(value, MAX_TTS_BACKUP_TIMEOUT))
+
+    def _engine_options(self, engine: str | None) -> dict[str, Any] | None:
+        """The backup voice's own options (its voice name), if it is that engine."""
+        voice = (self.options.get(CONF_TTS_BACKUP_VOICE) or "").strip()
+        if voice and engine and engine == self.options.get(CONF_TTS_BACKUP):
+            if engine != self.options.get(CONF_TTS_ENTITY):
+                return {"voice": voice}
+        return None
+
+    @property
+    def combine_enabled(self) -> bool:
+        return bool(self.options.get(CONF_COMBINE, DEFAULT_COMBINE))
+
+    @property
+    def gather_seconds(self) -> float:
+        return _seconds_option(self.options.get(CONF_GATHER), DEFAULT_GATHER, MAX_GATHER)
+
+    @property
+    def stay_connected(self) -> float:
+        return _seconds_option(
+            self.options.get(CONF_STAY_CONNECTED),
+            DEFAULT_STAY_CONNECTED,
+            MAX_STAY_CONNECTED,
+        )
+
+    @property
+    def link_label(self) -> str:
+        label = self.options.get(CONF_LINK_LABEL)
+        return DEFAULT_LINK_LABEL if label is None else str(label).strip()
+
+    @property
+    def missed_bell(self) -> bool:
+        return bool(self.options.get(CONF_MISSED_BELL, False))
+
+    def is_night(self) -> bool:
+        """The night condition (a template) is true. Errors count as day."""
+        source = (self.options.get(CONF_NIGHT_CONDITION) or "").strip()
+        if not source:
+            return False
+        try:
+            result = Template(source, self.hass).async_render(parse_result=False)
+        except Exception as err:  # noqa: BLE001 - a broken template: treat as day
+            _LOGGER.warning("The night condition could not be worked out: %s", err)
+            return False
+        return str(result).strip().lower() in ("true", "on", "yes", "1")
+
+    def must_hear(self) -> list[str]:
+        """Speakers that must play every alert now (night list at night)."""
+        night = list(self.options.get(CONF_NIGHT_MUST_HEAR) or [])
+        if night and self.is_night():
+            return night
+        return list(self.options.get(CONF_MUST_HEAR) or [])
 
     @property
     def watched_players(self) -> list[str]:
@@ -1032,6 +1217,9 @@ class AlertTTS:
         enabled: bool,
         received: tuple[datetime, float],
     ) -> None:
+        if wanted and enabled and self.combine_enabled:
+            await self._process_each(fresh, wanted, queued, received)
+            return
         received_at, t0 = received
         last = fresh[-1]
         top = max(api.as_int(m.get("priority")) for m in fresh)
@@ -1117,6 +1305,8 @@ class AlertTTS:
             )
             for m in fresh
         ]
+        for row, m in zip(rows, fresh, strict=True):
+            row["link"] = find_link(m, self.link_label)
         if announce:
             self.entry.async_create_background_task(
                 self.hass,
@@ -1125,6 +1315,124 @@ class AlertTTS:
             )
         else:
             await self._record(rows)
+
+    async def _process_each(
+        self,
+        fresh: list[dict],
+        wanted: list[dict],
+        queued: bool,
+        received: tuple[datetime, float],
+    ) -> None:
+        """Combine mode: word each alert on its own and queue it for the spool.
+
+        Each alert is queued as soon as it is worded, so the first can be
+        spoken while the next is still being worded (those then follow as
+        "more alerts"). Emergencies are worded first.
+        """
+        received_at, t0 = received
+        wanted_ids = {id(m) for m in wanted}
+        await self._record(
+            [
+                history_record(
+                    m, received_at, queued=queued, announced=False, spoken_text=None
+                )
+                for m in fresh
+                if id(m) not in wanted_ids
+            ]
+        )
+        last = fresh[-1]
+        self._last_raw = {
+            k: last.get(k) for k in ("title", "message", "app", "priority")
+        }
+        ordered = sorted(wanted, key=lambda m: api.as_int(m.get("priority")) < 2)
+        for m in ordered:
+            priority = api.as_int(m.get("priority"))
+            emergency = priority >= 2
+            timings: dict[str, Any] = {}
+            if sent := api.as_int(m.get("date")):
+                timings["pushover_delay_s"] = round(received_at.timestamp() - sent, 1)
+            spoken = await self.compute_spoken([m])
+            filter_text = spoken["text"]
+            timings["text_ms"] = _ms_since(t0)
+            if not self.spool.busy:
+                self._prepare(timings, t0)  # wake the speakers while the AI words
+            ai = await self.ai_wording([m], spoken, emergency)
+            if ai is not None:
+                timings["ai_done_ms"] = _ms_since(t0)
+            use_ai = bool(ai and ai["text"])
+            text = ai["text"] if use_ai else filter_text
+            source = SOURCE_AI if use_ai else SOURCE_FILTER
+            link = find_link(m, self.link_label)
+            extra: dict[str, Any] = {
+                "spoken_source": source,
+                "filter_text": filter_text,
+                "timings": timings,
+                "link": link,
+            }
+            if ai is not None:
+                extra.update(
+                    ai_text=ai["text"],
+                    ai_answer=ai["answer"],
+                    ai_reason=ai["reason"],
+                    ai_seconds=ai["seconds"],
+                    ai_server=ai.get("server"),
+                )
+            row = history_record(
+                m,
+                received_at,
+                queued=queued,
+                announced=True,
+                spoken_text=text,
+                extra=extra,
+            )
+            self.last_alert = {
+                "title": clean(m.get("title") or m.get("app")),
+                "message": clean(str(m.get("message") or "")[:MAX_MESSAGE_INPUT]),
+                "app": m.get("app", ""),
+                "priority": priority,
+                "count": len(fresh),
+                "queued": queued,
+                "announced": True,
+                "spoken_text": text,
+                "spoken_outcome": spoken["outcome"],
+                "spoken_source": source,
+                "filter_text": filter_text,
+                "ai_text": ai["text"] if ai else None,
+                "ai_reason": ai["reason"] if ai else None,
+                "ai_seconds": ai["seconds"] if ai else None,
+                "link": link,
+                "timings": timings,
+            }
+            self.last_alert_time = received_at
+            self.hass.bus.async_fire(
+                EVENT_ALERT,
+                {
+                    "count": 1,
+                    "queued": queued,
+                    "highest_priority": priority,
+                    "emergency": emergency,
+                    "title": self.last_alert["title"],
+                    "message": self.last_alert["message"],
+                    "app": self.last_alert["app"],
+                    "announced": True,
+                    "spoken_text": text,
+                    "spoken_source": source,
+                    "link": link,
+                    "messages": [{k: m.get(k) for k in MESSAGE_FIELDS}],
+                },
+            )
+            self.update_entities()
+            self.spool.add(
+                SpoolItem(
+                    text=text or self._fixed_phrase(),
+                    emergency=emergency,
+                    rows=[row],
+                    timings=timings,
+                    t0=t0,
+                    link=link,
+                    title=self.last_alert["title"],
+                )
+            )
 
     async def _announce_and_record(
         self,
@@ -1634,7 +1942,12 @@ class AlertTTS:
         while time.monotonic() < settle_until and not self._speakers_ready():
             await asyncio.sleep(1)
         await self.speak(text or self._fixed_phrase(), timings=timings, t0=t0)
-        if emergency and self.repeat_until_ack and self.pending_receipts:
+        if emergency:
+            self.start_repeats()
+
+    def start_repeats(self) -> None:
+        """Repeat the emergency phrase until acknowledged (if switched on)."""
+        if self.repeat_until_ack and self.pending_receipts:
             self._stop_repeats()
             self._ack_event.clear()
             self._repeat_task = self.entry.async_create_background_task(
@@ -1706,18 +2019,21 @@ class AlertTTS:
     ) -> None:
         """Say `text` on every selected speaker at the configured volume.
 
-        ``timings`` (if given) gets each step's time in ms since ``t0``.
+        ``timings`` (if given) gets each step's time in ms since ``t0``. With
+        "Combine alerts" on, it goes through the spool, so it shares the
+        speakers' session with the alerts (no extra wake-ups).
         """
+        if self.combine_enabled:
+            await self.spool.say(text, notify_on_failure, timings, t0)
+            return
         mark = _Marks(timings, t0)
         async with self._speak_lock:
             mark("speak_start_ms")
             await self._speak(text, notify_on_failure, mark)
             self.update_entities()
 
-    async def _speak(
-        self, text: str, notify_on_failure: bool, mark: _Marks | None = None
-    ) -> None:
-        mark = mark or _Marks(None, None)
+    def _targets(self) -> tuple[str | None, bool, list[str], list[str]]:
+        """(group, group usable, speakers ready, speakers unavailable)."""
         group = self.speaker_group
         members = self.speakers or ([group] if group else [])
         if members == [group]:
@@ -1729,6 +2045,16 @@ class AlertTTS:
             (down if bad else ready).append(entity_id)
         group_state = self.hass.states.get(group) if group else None
         group_ok = group_state is not None and group_state.state not in _BAD_STATES
+        return group, group_ok, ready, down
+
+    async def _check_targets(
+        self, text: str, notify_on_failure: bool
+    ) -> tuple[str | None, list[str], str] | None:
+        """Where to speak: (usable group, ready speakers, voice). None = nowhere.
+
+        Sends the phone warnings for unavailable speakers or settings.
+        """
+        group, group_ok, ready, down = self._targets()
         if group and not group_ok:
             _LOGGER.warning(
                 "Speaker group %s is unavailable; announcing on each speaker", group
@@ -1740,17 +2066,54 @@ class AlertTTS:
         if not ready:
             if notify_on_failure and not down:
                 await self._notify_fallback(f"{text} (no speakers selected)")
-            return
+            return None
         tts_entity = self.options.get(CONF_TTS_ENTITY)
         if not tts_entity:
             _LOGGER.error("No text-to-speech engine selected")
             if notify_on_failure:
                 await self._notify_fallback(f"{text} (no text-to-speech engine)")
-            return
+            return None
+        return (group if group_ok else None), ready, tts_entity
 
-        # Start making the audio now, while the speakers are being readied.
-        voices = _Voices(self, text, tts_entity, mark)
+    async def async_voice_audio(
+        self, text: str, language: str | None, own_entity: str | None
+    ) -> tuple[bytes, str]:
+        """Audio for the "voice with backup" entity: main voice, else backup.
+
+        Raises if neither voice could make it (the recorded phrase isn't
+        used here: it says something else). ``own_entity`` is never used as a
+        voice (that would call itself).
+        """
+        main = self.options.get(CONF_TTS_ENTITY) or ""
+        backup = self.options.get(CONF_TTS_BACKUP) or None
+        if main == own_entity:
+            main = ""
+        if backup == own_entity:
+            backup = None
+        if not main and not backup:
+            raise HomeAssistantError("Push Alert TTS has no voice selected")
+        voices = _Voices(
+            self, text, main, _Marks(None, None), language=language, backup=backup
+        )
         voices.start()
+        try:
+            await voices.first()
+            for voice in (VOICE_MAIN, VOICE_BACKUP):
+                if voice in voices.data:
+                    return voices.data[voice]
+        finally:
+            voices.stop()
+        raise HomeAssistantError("Neither the main nor the backup voice worked")
+
+    def new_voices(self, text: str, mark: Any) -> _Voices:
+        """A voice set (main, backup, recorded phrase) for `text`."""
+        return _Voices(self, text, self.options.get(CONF_TTS_ENTITY) or "", mark)
+
+    async def _open_speakers(self, ready: list[str], mark: _Marks) -> dict[str, Any]:
+        """Wake the speakers and set the volume (only where it differs).
+
+        Returns what is needed to put them back as they were.
+        """
         initial = {s: self.hass.states.get(s) for s in ready}
         prepared, self._prepared = self._prepared, None
         if prepared and time.monotonic() - prepared[0] < PREPARE_MAX_AGE:
@@ -1762,29 +2125,94 @@ class AlertTTS:
             for s, st in initial.items()
             if st and st.attributes.get("is_volume_muted")
         ]
-        previous: dict[str, float | None] = {}
+        restore: dict[str, Any] = {"previous": {}, "muted": muted, "was_off": was_off}
+        levels = await asyncio.gather(*(self._wake(s) for s in ready))
+        target = round(self.volume / 100, 2)
+        changed: dict[str, float | None] = {}
+        for s, level in zip(ready, levels, strict=True):
+            # Google speakers beep at every volume change: leave a speaker
+            # that is already at the announcement volume alone.
+            if level is None or abs(level - target) > 0.005:
+                changed[s] = level
+        restore["previous"] = changed
+        await asyncio.gather(
+            *(
+                self._call("media_player", "volume_mute", s, is_volume_muted=False)
+                for s in muted
+            ),
+            *(
+                self._call("media_player", "volume_set", s, volume_level=target)
+                for s in changed
+            ),
+        )
+        # Only the speakers: a Cast speaker group comes up only once
+        # something is played on it, so waiting for it would just add delay.
+        await self._wait_awake(ready, mark)
+        return restore
+
+    async def _restore_speakers(self, restore: Mapping[str, Any]) -> None:
+        """Put volumes, mute and power back as they were before speaking."""
+        for s, level in (restore.get("previous") or {}).items():
+            if level is not None:
+                await self._call("media_player", "volume_set", s, volume_level=level)
+        for s in restore.get("muted") or []:
+            await self._call("media_player", "volume_mute", s, is_volume_muted=True)
+        for s in restore.get("was_off") or []:
+            await self._call("media_player", "turn_off", s)
+
+    async def _speak(
+        self, text: str, notify_on_failure: bool, mark: _Marks | None = None
+    ) -> None:
+        mark = mark or _Marks(None, None)
+        target = await self._check_targets(text, notify_on_failure)
+        if target is None:
+            return
+        group, ready, tts_entity = target
+        # Start making the audio now, while the speakers are being readied.
+        voices = _Voices(self, text, tts_entity, mark)
+        voices.start()
+        restore: dict[str, Any] = {}
         try:
-            levels = await asyncio.gather(*(self._wake(s) for s in ready))
-            previous = dict(zip(ready, levels, strict=True))
-            await asyncio.gather(
-                *(
-                    self._call("media_player", "volume_mute", s, is_volume_muted=False)
-                    for s in muted
-                ),
-                *(
-                    self._call(
-                        "media_player",
-                        "volume_set",
-                        s,
-                        volume_level=round(self.volume / 100, 2),
-                    )
-                    for s in ready
-                ),
+            restore = await self._open_speakers(ready, mark)
+            await self._play_text(
+                text, notify_on_failure, mark, group, ready, voices=voices
             )
-            # Only the speakers: a Cast speaker group comes up only once
-            # something is played on it, so waiting for it would just add delay.
-            await self._wait_awake(ready, mark)
-            media, voice = await voices.first()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Announcement failed: %s", err)
+            if notify_on_failure:
+                await self._notify_fallback(f"{text} (speaker announcement failed)")
+        finally:
+            voices.stop()
+            await self._restore_speakers(restore)
+
+    async def _play_text(
+        self,
+        text: str,
+        notify_on_failure: bool,
+        mark: _Marks,
+        group: str | None,
+        ready: list[str],
+        *,
+        voices: _Voices | None = None,
+        media: str | None = None,
+        voice: str | None = None,
+        seen: set[str] | None = None,
+        watch: list[str] | None = None,
+        report: bool = True,
+    ) -> str:
+        """Make (unless given) and play the audio on ready speakers. Returns the outcome.
+
+        ``seen`` collects the speakers in ``watch`` seen playing. With
+        ``report`` off, problems are left for the caller to report.
+        """
+        own = voices is None and media is None
+        if own:
+            voices = _Voices(self, text, self.options.get(CONF_TTS_ENTITY) or "", mark)
+            voices.start()
+        try:
+            if media is None:
+                assert voices is not None
+                media, voice = await voices.first()
             if media is None or voice is None:
                 _LOGGER.error(
                     "No voice could make the audio and there is no recorded "
@@ -1792,20 +2220,28 @@ class AlertTTS:
                     text,
                 )
                 mark.note("outcome", "no_audio")
-                if notify_on_failure:
+                if notify_on_failure and report:
                     await self._notify_fallback(
                         f"{text} (no voice could be used, nothing was spoken)"
                     )
-                return
+                return PLAY_FAILED
             outcome, tries, voice = await self._play_with_retries(
-                group if group_ok else None, ready, media, voice, voices, text, mark
+                group,
+                ready,
+                media,
+                voice,
+                voices or _NoRetryVoices(),
+                text,
+                mark,
+                seen=seen,
+                watch=watch,
             )
             mark.note("attempts", tries)
             mark.note("outcome", outcome)
             mark.note("voice", voice)
             # Retries off: only a failed call warns, as before retries existed.
-            report = outcome == PLAY_FAILED or self.announce_retries > 0
-            if outcome != PLAY_OK and report:
+            problem = outcome == PLAY_FAILED or self.announce_retries > 0
+            if outcome != PLAY_OK and problem and report:
                 _LOGGER.error(
                     "Announcement %s after %s tries: %s",
                     _PLAY_PROBLEM[outcome],
@@ -1819,21 +2255,10 @@ class AlertTTS:
                 await self._notify_fallback(
                     f"{text} (no voice could be used; the recorded phrase was played)"
                 )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Announcement failed: %s", err)
-            if notify_on_failure:
-                await self._notify_fallback(f"{text} (speaker announcement failed)")
+            return outcome
         finally:
-            voices.stop()
-            for s, level in previous.items():
-                if level is not None:
-                    await self._call(
-                        "media_player", "volume_set", s, volume_level=level
-                    )
-            for s in muted:
-                await self._call("media_player", "volume_mute", s, is_volume_muted=True)
-            for s in was_off:
-                await self._call("media_player", "turn_off", s)
+            if own and voices is not None:
+                voices.stop()
 
     async def _play_with_retries(
         self,
@@ -1841,9 +2266,12 @@ class AlertTTS:
         ready: list[str],
         media: str,
         voice: str,
-        voices: _Voices,
+        voices: Any,
         text: str,
         mark: _Marks,
+        *,
+        seen: set[str] | None = None,
+        watch: list[str] | None = None,
     ) -> tuple[str, int, str]:
         """Play ready audio, retrying as set. Returns (outcome, tries, voice).
 
@@ -1857,7 +2285,9 @@ class AlertTTS:
         tries = 0
         while True:
             tries += 1
-            outcome = await self._attempt(route, media, group, ready, text, mark)
+            outcome = await self._attempt(
+                route, media, group, ready, text, mark, seen=seen, watch=watch
+            )
             if outcome == PLAY_OK:
                 return outcome, tries, voice
             switch = bool(group) and outcome in (PLAY_FAILED, PLAY_NOT_STARTED)
@@ -1956,6 +2386,9 @@ class AlertTTS:
         ready: list[str],
         text: str,
         mark: _Marks,
+        *,
+        seen: set[str] | None = None,
+        watch: list[str] | None = None,
     ) -> str:
         """One play of ready audio, on the group or on each speaker."""
         players = [group] if route == "group" and group else ready
@@ -1963,7 +2396,7 @@ class AlertTTS:
             mark.note("route", "group")
         else:  # each speaker: a set group that isn't used is a fallback
             mark.note("route", "group_fallback" if self.speaker_group else "speakers")
-        before = {p: self.hass.states.get(p) for p in players}
+        before = {p: self.hass.states.get(p) for p in [*players, *(watch or [])]}
         started = time.monotonic()
         try:
             await self._play_media(players, media, mark)
@@ -1978,6 +2411,8 @@ class AlertTTS:
             started,
             mark,
             start_timeout=GROUP_START_TIMEOUT if route == "group" else None,
+            seen=seen,
+            watch=watch,
         )
         if outcome == PLAY_NOT_STARTED and route == "group":
             _LOGGER.warning(
@@ -2088,9 +2523,13 @@ class AlertTTS:
                     self.options.get(CONF_TTS_LANGUAGE) if engine == main else None
                 )
                 try:
-                    async with asyncio.timeout(BACKUP_GENERATE_TIMEOUT):
+                    async with asyncio.timeout(CLIP_GENERATE_TIMEOUT):
                         _media, data, extension = await audio.generate(
-                            self.hass, engine, text, language
+                            self.hass,
+                            engine,
+                            text,
+                            language,
+                            self._engine_options(engine),
                         )
                     path = await self.hass.async_add_executor_job(
                         audio.save_clip,
@@ -2150,8 +2589,15 @@ class AlertTTS:
         started: float,
         mark: _Marks | None = None,
         start_timeout: float | None = None,
+        *,
+        seen: set[str] | None = None,
+        watch: list[str] | None = None,
     ) -> str:
         """Wait until our announcement has started and then finished.
+
+        ``seen`` (if given) collects which of ``speakers`` and ``watch`` were
+        seen playing after the play was asked for (each speaker in a group
+        reports playing too).
 
         Returns PLAY_NOT_STARTED if it was never seen playing within
         `start_timeout` (default PLAYBACK_START_TIMEOUT), PLAY_SHORT if it
@@ -2191,7 +2637,12 @@ class AlertTTS:
             nonlocal start, last_active
             new, old = event.data["new_state"], event.data["old_state"]
             now = loop.time()
-            if start is None and ours(event.data["entity_id"], new):
+            entity_id = event.data["entity_id"]
+            if seen is not None and ours(entity_id, new):
+                seen.add(entity_id)
+            if entity_id not in speakers:
+                return  # only watched for `seen`
+            if start is None and ours(entity_id, new):
                 start = now
             if start is not None and (
                 (new is not None and new.state in PLAYBACK_ACTIVE_STATES)
@@ -2199,10 +2650,13 @@ class AlertTTS:
             ):
                 last_active = now  # active until now
 
-        unsub = async_track_state_change_event(self.hass, speakers, _changed)
+        tracked = list(dict.fromkeys([*speakers, *(watch or [])]))
+        unsub = async_track_state_change_event(self.hass, tracked, _changed)
         try:
             if any(ours(s, self.hass.states.get(s)) for s in speakers):
                 start = last_active = loop.time()
+            if seen is not None:
+                seen.update(s for s in tracked if ours(s, self.hass.states.get(s)))
             deadline = loop.time() + start_timeout
             while start is None and loop.time() < deadline:
                 await asyncio.sleep(0.1)
@@ -2228,7 +2682,14 @@ class AlertTTS:
         return PLAY_OK
 
     # -- fallback notification ---------------------------------------------------
-    async def _notify_fallback(self, message: str) -> None:
+    async def _notify_fallback(
+        self, message: str, *, link: str | None = None, title: str | None = None
+    ) -> None:
+        """Send `message` to the fallback notify action (if one is set).
+
+        ``link`` opens when the notification is tapped (companion app), or is
+        added to the text for other notifiers. It is never spoken.
+        """
         service = (self.options.get(CONF_FALLBACK_NOTIFY) or "").strip()
         if not service:
             return
@@ -2236,10 +2697,19 @@ class AlertTTS:
         if domain != "notify" or not name:
             _LOGGER.warning("Fallback notify action %r is not notify.<name>", service)
             return
-        payload: dict[str, Any] = {"title": "Push Alert TTS", "message": message}
+        payload: dict[str, Any] = {
+            "title": title or "Push Alert TTS",
+            "message": message,
+        }
         if name.startswith("mobile_app_"):
             # Break through iOS Focus / Do Not Disturb where allowed.
-            payload["data"] = {"push": {"interruption-level": "time-sensitive"}}
+            data: dict[str, Any] = {"push": {"interruption-level": "time-sensitive"}}
+            if link:
+                data["url"] = link  # iOS: opens when tapped
+                data["clickAction"] = link  # Android: opens when tapped
+            payload["data"] = data
+        elif link:
+            payload["message"] = f"{message}\n{link}"
         try:
             async with asyncio.timeout(SERVICE_TIMEOUT):
                 await self.hass.services.async_call(

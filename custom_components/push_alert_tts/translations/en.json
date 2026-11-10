@@ -76,6 +76,10 @@
           "tts_entity": "Text-to-speech engine",
           "tts_backup_entity": "Backup text-to-speech engine (optional)",
           "tts_language": "Language (optional)",
+          "tts_timeout": "Main voice: time per try",
+          "tts_retries": "Main voice: extra tries",
+          "tts_backup_voice": "Backup voice name (optional)",
+          "tts_backup_timeout": "Backup voice: wait at most",
           "message_mode": "What to say",
           "fixed_message": "Fixed phrase",
           "regex": "Regular expression",
@@ -95,7 +99,8 @@
           "repeat_max": "Maximum emergency repeats",
           "offline_alert_delay": "Warn when offline for",
           "history_days": "Keep alert history for",
-          "word_replacements": "Word replacements for the normal text (optional)"
+          "word_replacements": "Word replacements for the normal text (optional)",
+          "delivery": "Combining and delivery"
         },
         "data_description": {
           "speakers": "Media players to announce on. All selected speakers speak at the same time. Separate speakers can start a second or so apart; use a speaker group below to keep them in sync.",
@@ -104,8 +109,12 @@
           "wake_wait": "Before speaking, wait up to this long until every speaker above is awake, so a speaker that was off doesn't miss the start. The speaker group isn't waited for (it only comes on once something plays on it). It speaks anyway when the time is up. 0 = don't wait.",
           "announce_retries": "If the speakers won't play the announcement, never start playing or stop much sooner than the text needs, play it again up to this many times (0-5). When every try fails, the fallback notification is sent. 0 = off (speakers that never report 'playing' would otherwise hear each alert twice).",
           "tts_entity": "For example Google Translate or Home Assistant Cloud.",
-          "tts_backup_entity": "Used when the main voice can't make the audio in time, and for retries, so a slow or broken voice service can't stop the alert. A voice that works without the internet (such as Piper, medium quality on a Raspberry Pi) is best. Leave empty to use only the main voice. The Language setting applies to the main voice only.",
+          "tts_backup_entity": "Used when the main voice can't make the audio after all its tries (see below), and for playback retries, so a slow or broken voice service can't stop the alert. A voice that works without the internet (such as Piper) is best. Leave empty to use only the main voice. The Language setting applies to the main voice only.",
           "tts_language": "Leave empty for the engine's default, e.g. en-GB.",
+          "tts_timeout": "Seconds the main voice may take to make the audio, per try. Be generous: a short delay is better than a missed alert. Default 20.",
+          "tts_retries": "If the main voice fails or is too slow, try it again this many times (for example on a poor internet connection) before the backup voice is used. The backup voice starts making its audio as soon as the main voice fails a try or is slow, so it is ready by then; the main voice is still preferred until it has used every try. Default 3.",
+          "tts_backup_voice": "The backup engine's own voice, if it has several. For Piper, for example en_GB-cori-high or en_GB-cori-medium (see Settings > Voice assistants, or the Piper add-on, for the names). Empty = the engine's default voice.",
+          "tts_backup_timeout": "Seconds the backup voice may take to make the audio. Local voices on a Raspberry Pi can be slow (a 'high' Piper voice can take over 30 seconds for one sentence on a Pi 4). Default 120.",
           "regex": "Used when 'What to say' is set to the regex option. Without a template it speaks the named group called say if your pattern has one, otherwise group 1, otherwise the whole match. Case-insensitive, and '.' also matches line breaks. If nothing matches, the fixed phrase is spoken. See the README for ready-made patterns.",
           "max_length": "Characters. Longer text is cut at a word. 0 = no limit (a hard limit of 2000 always applies).",
           "app_filter": "Comma-separated Pushover application names. Empty = all apps.",
@@ -121,6 +130,30 @@
           "word_replacements": "One per line, written as: from = to. For example Re-Triggered = re alert. Whole words or phrases, any capitals. Applies to the normal (non-AI) spoken text only; to change the AI's wording, use the AI instructions or memory. Empty = off."
         },
         "sections": {
+          "delivery": {
+            "name": "Combining and delivery (optional)",
+            "description": "Speak alerts that arrive together as one announcement, keep the speakers ready between them (fewer connect sounds and volume beeps), check that important speakers really played each alert, and send a notification when they didn't. Everything here is off until 'Combine alerts' is switched on; then alerts are spoken as before except where described. See the README.",
+            "data": {
+              "combine_alerts": "Combine alerts",
+              "gather_seconds": "Wait for more alerts",
+              "stay_connected": "Keep the speakers ready for",
+              "must_hear_speakers": "Must-hear speakers",
+              "night_must_hear_speakers": "Must-hear speakers at night (optional)",
+              "night_condition": "Night condition (optional template)",
+              "link_label": "Link label",
+              "missed_bell": "Also show missed alerts in Home Assistant"
+            },
+            "data_description": {
+              "combine_alerts": "On: everything to be said goes into one queue. The speakers are woken and set to the announcement volume once, alerts that arrive together are said as one announcement ('3 alerts have arrived. First alert: ...'), and alerts that arrive while it is speaking follow straight after ('2 more alerts have arrived ...'). One alert on its own is said exactly as before. Off = each alert is announced on its own, as before.",
+              "gather_seconds": "When the first alert arrives, wait this long for others before speaking, so alerts arriving together are said together. Emergency alerts never wait. 0 = speak at once. Default 3.",
+              "stay_connected": "After speaking, keep the speakers awake at the announcement volume this long before putting them back, so alerts that follow soon after don't cause another connect sound or volume beep. 0 = put them back straight away. Default 60.",
+              "must_hear_speakers": "Speakers that must play every alert (they must also be in the speakers list above). After each announcement, each one is checked; one that didn't play it hears it again on its own, starting with 'Missed alert TTS:'. If it still didn't play, each alert is sent to the fallback notification (with its link). Empty = no check.",
+              "night_must_hear_speakers": "Used instead of the list above while the night condition is true (for example only the bedroom speaker). Empty = always use the list above.",
+              "night_condition": "A template that is true at night, for example: {{ is_state('sensor.phone_battery_state', 'Charging') and is_state('media_player.bedroom_tv', 'on') }}. Empty = never night. If it can't be worked out, it counts as day.",
+              "link_label": "The text before the link to open from a notification, as it appears in your alerts, e.g. Monitor Status for Datadog ('Monitor Status <https://...>'). The link is never spoken. If no such link is found, the alert's Pushover link is used when it is a web link. Empty = Monitor Status.",
+              "missed_bell": "When a must-hear speaker didn't play an alert, also add a Home Assistant notification (the bell in the sidebar) with the alert and its link."
+            }
+          },
           "ai_wording": {
             "name": "AI wording (optional, local LLM)",
             "description": "Let a language model you run yourself (for example Ollama on a PC) word each alert as one short sentence. If it is off, slow, unreachable or answers badly, the normal text above is spoken instead, so no alert is lost. See the README for setup.",
@@ -182,7 +215,9 @@
       "ai_url_required": "AI wording is on: enter the LLM server address, starting with http:// or https://.",
       "ai_model_required": "AI wording is on: enter the model name.",
       "ai_invalid_pattern": "The 'AI answer must start with' pattern isn't a valid regular expression.",
-      "ai_invalid_keep_alive": "'Keep the model loaded for' must be empty, a whole number of seconds (-1 = always), or a duration such as 30s, 10m or 1h."
+      "ai_invalid_keep_alive": "'Keep the model loaded for' must be empty, a whole number of seconds (-1 = always), or a duration such as 30s, 10m or 1h.",
+      "must_hear_not_speaker": "Must-hear speakers must also be selected in the speakers list.",
+      "invalid_night_condition": "The night condition is not a valid template."
     }
   },
   "selector": {
@@ -253,6 +288,11 @@
     "text": {
       "ai_correction": {
         "name": "AI correction"
+      }
+    },
+    "tts": {
+      "voice": {
+        "name": "Voice with backup"
       }
     }
   },

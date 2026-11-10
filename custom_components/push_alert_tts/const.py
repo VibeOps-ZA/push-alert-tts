@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -55,6 +55,45 @@ CONF_HISTORY_DAYS = "history_days"
 CONF_EXPAND_ABBREVIATIONS = "expand_abbreviations"
 CONF_WORD_REPLACEMENTS = "word_replacements"  # "from = to", one per line
 CONF_REMOVE_REPEATS = "remove_repeated_words"
+# Voices: how long and how often the main voice is tried before the backup is used.
+CONF_TTS_TIMEOUT = "tts_timeout"  # seconds per try of the main voice
+CONF_TTS_RETRIES = "tts_retries"  # extra tries of the main voice
+CONF_TTS_BACKUP_VOICE = "tts_backup_voice"  # optional voice name for the backup
+CONF_TTS_BACKUP_TIMEOUT = "tts_backup_timeout"  # seconds the backup voice may take
+
+# Combining alerts and making sure they are heard. Stored flat in the options;
+# shown in a collapsible "Combining and delivery" section of the options form.
+CONF_DELIVERY_SECTION = "delivery"
+CONF_COMBINE = "combine_alerts"
+CONF_GATHER = "gather_seconds"  # wait this long for alerts arriving together
+CONF_STAY_CONNECTED = "stay_connected"  # keep the speakers ready after speaking
+CONF_MUST_HEAR = "must_hear_speakers"
+CONF_NIGHT_MUST_HEAR = "night_must_hear_speakers"
+CONF_NIGHT_CONDITION = "night_condition"  # template: true = night
+CONF_LINK_LABEL = "link_label"  # text before the link to open from a notification
+CONF_MISSED_BELL = "missed_bell"  # also a Home Assistant notification when missed
+DELIVERY_OPTION_KEYS = (
+    CONF_COMBINE,
+    CONF_GATHER,
+    CONF_STAY_CONNECTED,
+    CONF_MUST_HEAR,
+    CONF_NIGHT_MUST_HEAR,
+    CONF_NIGHT_CONDITION,
+    CONF_LINK_LABEL,
+    CONF_MISSED_BELL,
+)
+DEFAULT_COMBINE = False
+DEFAULT_GATHER = 3
+MAX_GATHER = 30
+DEFAULT_STAY_CONNECTED = 60
+MAX_STAY_CONNECTED = 600
+DEFAULT_LINK_LABEL = "Monitor Status"
+DEFAULT_TTS_TIMEOUT = 20
+MAX_TTS_TIMEOUT = 120
+DEFAULT_TTS_RETRIES = 3
+MAX_TTS_RETRIES = 5
+DEFAULT_TTS_BACKUP_TIMEOUT = 120
+MAX_TTS_BACKUP_TIMEOUT = 600
 
 # AI wording (optional local LLM). Stored flat in the options; shown in a
 # collapsible "AI wording" section of the options form.
@@ -201,9 +240,19 @@ SHORT_PLAY_FRACTION = 0.3  # played for less than this share of the expected tim
 SHORT_PLAY_MIN = 1.0  # ... or for less than this many seconds
 RETRY_PAUSE = 2  # seconds between a failed announcement and its retry
 PREPARE_MAX_AGE = 120  # seconds a speaker snapshot taken before the AI stays valid
-GENERATE_TIMEOUT = 8  # seconds the main voice may take to make the audio
-BACKUP_GENERATE_TIMEOUT = 20  # ... the backup voice (a local voice may load first)
-BACKUP_HEAD_START = 3  # start the backup voice too if the main one is this slow
+GENERATE_TIMEOUT = DEFAULT_TTS_TIMEOUT  # seconds per try of the main voice
+BACKUP_GENERATE_TIMEOUT = DEFAULT_TTS_BACKUP_TIMEOUT  # the backup voice
+CLIP_GENERATE_TIMEOUT = 120  # recording the fixed phrase in advance (no hurry)
+# Start making the backup audio too once the main voice has failed a try or
+# is this slow, so it is ready if the main voice gives up. The main voice is
+# still preferred until it has used all its tries.
+BACKUP_HEAD_START = 5
+VOICE_RETRY_PAUSE = 1  # seconds between tries of the main voice
+# Combined announcements.
+PAUSE_AFTER_HEADING = 1.0  # seconds after "3 alerts have arrived." / "First alert:"
+PAUSE_AFTER_ALERT = 2.0  # seconds after each alert
+STITCH_TIMEOUT = 60  # seconds ffmpeg may take to join the parts
+SPOOL_FILES_KEPT = 4  # joined audio files kept on disk (rotated)
 PLAY_CALL_TIMEOUT = 20  # seconds a speaker may take to accept ready audio
 CLIP_REFRESH_INTERVAL = 3600  # re-check (and re-make if needed) the recorded phrase
 DEFAULT_WAKE_WAIT = 10

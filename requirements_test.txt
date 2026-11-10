@@ -1,2 +1,5 @@
 pytest-homeassistant-custom-component
 ruff
+# text-to-speech (for the "voice with backup" entity in tests)
+mutagen
+ha-ffmpeg

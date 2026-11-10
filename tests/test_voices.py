@@ -29,6 +29,7 @@ def quick_voices():
         patch(f"{C}.GENERATE_TIMEOUT", 0.3),
         patch(f"{C}.BACKUP_GENERATE_TIMEOUT", 0.5),
         patch(f"{C}.BACKUP_HEAD_START", 0.1),
+        patch(f"{C}.VOICE_RETRY_PAUSE", 0),
         patch(f"{C}.GROUP_START_TIMEOUT", 1),
         patch(f"{C}.PLAYBACK_END_GRACE", 0.6),
         patch(f"{C}.SHORT_PLAY_MIN", 1.0),
@@ -41,7 +42,7 @@ def _voices(slow=(), broken=()):
     """A stand-in audio.generate where some voices hang or fail."""
     made: list[str] = []
 
-    async def generate(hass, engine, text, language):
+    async def generate(hass, engine, text, language, options=None):
         made.append(engine)
         if engine in slow:
             await asyncio.sleep(5)

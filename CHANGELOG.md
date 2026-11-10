@@ -5,6 +5,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-10
+
+### Added
+- **Combine alerts** (new *Combining and delivery* section in the options, off by default). Everything to be said
+  goes into one queue and one speaker session: the speakers are woken and set to the announcement volume once, alerts
+  arriving together are said as one announcement made into a single audio file with exact pauses ("3 alerts have
+  arrived." - "First alert:" - ...), alerts arriving while it speaks follow straight after ("2 more alerts have
+  arrived ..."), and the speakers are put back only after *Keep the speakers ready for* (default 60 s) with nothing
+  new. One alert on its own is said as before. Emergencies go first and never wait. The test button, emergency
+  repeats and other messages share the session. Joining uses ffmpeg; if that fails the same words are said as one
+  text. New settings: *Wait for more alerts* (default 3 s), *Keep the speakers ready for*.
+- **Must-hear speakers**: after each announcement, each must-hear speaker is checked; one that didn't play it hears
+  it again on its own ("Missed alert TTS: ..."), up to *Retries* times; if it still didn't, each alert is sent to the
+  fallback notification ("not heard on ...") with its link. Optional night list and *Night condition* (a template;
+  errors count as day). Optional *Also show missed alerts in Home Assistant* (persistent notification).
+- **Alert links**: the link after *Link label* (default "Monitor Status") in the alert's message (else the alert's
+  web link) is saved in the history (`link`), sent with notifications (opens when tapped in the Companion app, never
+  spoken), included in the `push_alert_tts_alert` event and the AI review data, and shown on the review card (the
+  wording becomes a link).
+- **Main voice tries**: *Main voice: time per try* (default 20 s, was a fixed 8 s) and *Main voice: extra tries*
+  (default 3) before the backup voice is used.
+- *Backup voice name* (for example `en_GB-cori-high` for Piper) and *Backup voice: wait at most* (default 120 s, was
+  a fixed 20 s), for slow local voices.
+- **Voice with backup** text-to-speech entity: the main voice with its tries, falling back to the backup voice, for
+  use in any automation (`tts.speak`).
+- Timings record `main_voice_tries`, `batch_size`, `batch_position`, `batch_more`, `joined` and `missed_speakers`.
+
+### Changed
+- The main voice is now preferred until it has used all its tries; the backup voice's audio is made alongside once
+  the main voice fails a try or is slow (after 5 s), but only used when the main voice gives up (it was: first to
+  finish wins).
+- A speaker already at the announcement volume is no longer set again (Google speakers beep on every volume change),
+  and only volumes that were changed are put back.
+- The fixed phrase may take up to 120 s to record (slow local voices).
+- With *Combine alerts* on, the `push_alert_tts_alert` event is fired once per alert as it is worded.
+
 ## [0.12.0] - 2026-11-10
 
 ### Added

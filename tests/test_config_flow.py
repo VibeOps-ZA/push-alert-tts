@@ -227,3 +227,68 @@ async def test_options_template_validation(hass: HomeAssistant, mock_entry) -> N
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert mock_entry.options["spoken_template"] == "Alert {host} from {app}"
+
+
+async def test_options_delivery_section(hass: HomeAssistant, mock_entry) -> None:
+    mock_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    base = {
+        "message_mode": "fixed",
+        "min_priority": "-2",
+        "speakers": ["media_player.bedroom", "media_player.kitchen"],
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {**base, "delivery": {"combine_alerts": True,
+                              "must_hear_speakers": ["media_player.lounge"]}},
+    )
+    assert result["errors"] == {"base": "must_hear_not_speaker"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **base,
+            "delivery": {"must_hear_speakers": [], "night_condition": "{{ states('x') "},
+        },
+    )
+    assert result["errors"] == {"base": "invalid_night_condition"}
+    with patch(
+        "custom_components.push_alert_tts.async_setup_entry",
+        new=AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                **base,
+                "tts_retries": 3,
+                "tts_backup_voice": "en_GB-cori-high",
+                "delivery": {
+                    "combine_alerts": True,
+                    "must_hear_speakers": ["media_player.bedroom"],
+                    "night_condition": "{{ is_state('input_boolean.x', 'on') }}",
+                },
+            },
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert mock_entry.options["combine_alerts"] is True
+    assert mock_entry.options["must_hear_speakers"] == ["media_player.bedroom"]
+    assert mock_entry.options["tts_backup_voice"] == "en_GB-cori-high"
+    assert "delivery" not in mock_entry.options
+
+
+async def test_options_keep_delivery_when_section_not_sent(
+    hass: HomeAssistant, mock_entry
+) -> None:
+    mock_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_entry, options={**mock_entry.options, "combine_alerts": True}
+    )
+    result = await hass.config_entries.options.async_init(mock_entry.entry_id)
+    with patch(
+        "custom_components.push_alert_tts.async_setup_entry",
+        new=AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"message_mode": "fixed", "min_priority": "-2"}
+        )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert mock_entry.options["combine_alerts"] is True

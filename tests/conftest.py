@@ -40,6 +40,7 @@ def fast_timings():
         patch("custom_components.push_alert_tts.coordinator.PLAYBACK_END_GRACE", 0),
         patch("custom_components.push_alert_tts.coordinator.SHORT_PLAY_MIN", 0),
         patch("custom_components.push_alert_tts.coordinator.RETRY_PAUSE", 0),
+        patch("custom_components.push_alert_tts.coordinator.VOICE_RETRY_PAUSE", 0),
         # Tests that need these set the option explicitly.
         patch("custom_components.push_alert_tts.coordinator.DEFAULT_WAKE_WAIT", 0),
         patch(
@@ -54,7 +55,7 @@ def fake_media_id(engine: str, text: str, language: str | None) -> str:
     return f"test-media://{engine}|{language or ''}|{text}"
 
 
-async def fake_generate(hass, engine, text, language):
+async def fake_generate(hass, engine, text, language, options=None):
     """Stand-in for audio.generate: makes no audio, always works."""
     return fake_media_id(engine, text, language), b"audio", "mp3"
 
@@ -75,6 +76,20 @@ async def fake_play_media(self, players, media, mark):
             "tts", "speak", data, target={"entity_id": engine}, blocking=True
         )
     mark("tts_done_ms")
+
+
+@pytest.fixture(autouse=True)
+def no_tts_platform(request):
+    """Most tests mock the tts.speak action; setting up Home Assistant's own
+    text-to-speech (for the voice-with-backup entity) would replace it."""
+    if request.node.get_closest_marker("tts_platform"):
+        yield
+        return
+    from custom_components import push_alert_tts  # noqa: PLC0415
+
+    platforms = [p for p in push_alert_tts.PLATFORMS if p != "tts"]
+    with patch.object(push_alert_tts, "PLATFORMS", platforms):
+        yield
 
 
 @pytest.fixture(autouse=True)

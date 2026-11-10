@@ -37,6 +37,8 @@ night, and you want the bedroom speaker to wake you as well as your phone.
 16. [Updating and removing](#16-updating-and-removing)
 17. [FAQ](#17-faq)
 18. [AI wording with a local LLM (optional)](#18-ai-wording-with-a-local-llm-optional)
+19. [Combining alerts and must-hear speakers (optional)](#19-combining-alerts-and-must-hear-speakers-optional)
+20. [A voice with a backup for your own automations](#20-a-voice-with-a-backup-for-your-own-automations)
 
 ---
 
@@ -315,10 +317,12 @@ Cloud*. See checklist item 4 if the list is empty.
 
 ### Backup text-to-speech engine *(optional, recommended)*
 
-A second voice, used when the main voice can't make the audio in time (it
-gets 8 seconds; if it hasn't finished after 3 seconds the backup starts too
-and whichever finishes first is used), and for retries. So a slow or broken
-voice service can't stop the alert.
+A second voice, used when the main voice can't make the audio after all its
+tries (see *Main voice: time per try* and *Main voice: extra tries* below), and
+for playback retries. So a slow or broken voice service can't stop the alert.
+The main voice is always preferred while it still has tries left; the backup
+starts making its audio as soon as the main voice fails a try or is slow, so
+it is ready the moment it is needed.
 
 Pick a voice that works **without the internet** if you can: most voices,
 including Google Translate, need the internet, and when your connection or
@@ -328,10 +332,17 @@ keeps working then. The usual choice is
 **Piper** app (add-on) from **Settings → Apps → App store**, start it, then
 add the [Wyoming Protocol](https://www.home-assistant.io/integrations/wyoming/)
 integration it offers under **Settings → Devices & services** (this creates
-`tts.piper`). Pick a voice in the Piper app's settings. On a Raspberry Pi 4 use
-a **medium** voice (for example `en_GB-cori-medium`, about 3 seconds per
-alert): the **high** voices take 15 seconds or more there, and a speaker can
-give up waiting.
+`tts.piper`). Choose the voice in *Backup voice name* below (or in the Piper
+app's settings).
+
+Piper voices come in quality levels: **low** (16 kHz audio, a little
+muffled, like a phone call), **medium** and **high** (22 kHz, crisper "s" and
+"t" sounds; high is a bigger model with slightly more natural rhythm).
+Bigger is slower. Measured on a Raspberry Pi 4 for one alert sentence:
+`en_GB-cori-medium` about 8-9 seconds, `en_GB-cori-high` about 35-60 seconds.
+Because the backup audio is made in full before anything plays, a slow voice
+only delays the alert, it doesn't cut it off; set *Backup voice: wait at most*
+high enough for the voice you choose.
 
 If you can't run a local voice, pick one from a **different** service from the
 main one: two Google Translate voices (`tts.google_en_com` and
@@ -342,10 +353,33 @@ or [OpenAI](https://www.home-assistant.io/integrations/openai_conversation/).
 Leave empty to use only the main voice. The *Language* setting below applies
 to the main voice only; the backup uses its own default language.
 
+### Backup voice name *(optional)*
+
+The backup engine's own voice, if it has several. For Piper, the voice's name,
+for example `en_GB-cori-high` or `en_GB-cori-medium`; the Piper app downloads
+a voice the first time it is used. You can see the names under
+**Settings → Voice assistants** (edit an assistant and open the voice list) or
+in the [Piper voice samples](https://rhasspy.github.io/piper-samples/). Empty =
+the engine's default voice.
+
+### Main voice: time per try *(default 20 seconds)* and extra tries *(default 3)*
+
+How long the main voice may take to make the audio, and how many more times it
+is tried if it fails or is too slow (for example on a poor internet
+connection), before the backup voice is used. Be generous: a short delay is
+much better than a missed alert.
+
+### Backup voice: wait at most *(default 120 seconds)*
+
+How long the backup voice may take to make the audio. Local voices on a small
+computer can be slow (see above). If the backup voice can't make it either,
+the recorded fixed phrase is played and the text goes to your phone.
+
 ### How an announcement is made
 
-1. **The audio is made first.** The main voice makes the spoken audio (the
-   backup voice joins in if the main one is slow, see above). Nothing is sent
+1. **The audio is made first.** The main voice makes the spoken audio, with
+   its extra tries; the backup voice is made alongside if the main one fails
+   a try or is slow, and used only if the main voice gives up (see above). Nothing is sent
    to the speakers yet, so a slow or unreachable voice service can't leave a
    speaker waiting, timing out, or making wake-up sounds for nothing.
 2. **If no voice can make it**, the *Fixed phrase* recorded in advance is
@@ -663,6 +697,13 @@ period back to `0` stops recording and **deletes** the saved history. The
 file is included in Home Assistant backups, and is deleted if you delete the
 integration.
 
+### Combining and delivery *(optional)*
+
+A collapsible section of the options. Everything in it is off until
+*Combine alerts* is switched on. See
+[Combining alerts and must-hear speakers](#19-combining-alerts-and-must-hear-speakers-optional)
+for what each setting does.
+
 ### AI wording *(optional)*
 
 A collapsible **AI wording** section at the bottom of the settings lets a
@@ -735,9 +776,12 @@ If you renamed anything, use the names shown on the device page instead.
 | **AI review** `sensor.push_alert_tts_ai_review` | How many alerts the AI looked at in the last 3 days. Its *alerts* attribute lists them, newest first: the alert as received, what was spoken, the AI's text and the reason if it wasn't used. Not saved in the recorder database. See [section 18](#18-ai-wording-with-a-local-llm-optional). |
 | **AI reachable** `binary_sensor.push_alert_tts_ai_reachable` | Connected / Disconnected: whether the main LLM server answers (unknown until first checked; unavailable while AI wording is off). Attributes: *unreachable_since*, *last_answer_from* (`main` or `backup`), *backup_set*, *backup_allowed_now*. |
 | **Re-word missed alerts** `button.push_alert_tts_re_word_missed_alerts` | Asks the AI to word the last 3 days' alerts that got no AI text, for the AI review list. Nothing is spoken. Same as the `push_alert_tts.reprocess_ai` action. |
+| **Voice with backup** `tts.push_alert_tts_voice_with_backup` | A text-to-speech voice for your own automations: your main voice with its tries, else the backup voice ([section 20](#20-a-voice-with-a-backup-for-your-own-automations)). |
 | **AI correction** `text.push_alert_tts_ai_correction` | Type a correction for the AI in plain words and press Enter: it is added to the AI memory and the box clears. Its *memory* attribute shows the whole memory. |
 
 About speakers:
+- A speaker already at the announce volume is left alone (Google speakers beep
+  at every volume change); only volumes that were changed are put back.
 - A **muted** speaker is unmuted for the announcement and muted again afterwards.
 - A speaker that was **off** is turned off again afterwards.
 - If a speaker can't report its current volume (rare), it is still set to the
@@ -920,8 +964,9 @@ actions:
 ```
 
 The event data includes `count`, `queued`, `highest_priority`, `emergency`,
-`title`, `message`, `app`, `announced`, `spoken_text`, and `messages` (the raw
-Pushover fields).
+`title`, `message`, `app`, `announced`, `spoken_text`, `link` (see *Link
+label*) and `messages` (the raw Pushover fields). With *Combine alerts* on, the
+event is fired once per alert (`count` is 1) as soon as that alert is worded.
 
 ### Event: `push_alert_tts_acknowledged`
 
@@ -1342,6 +1387,133 @@ text was used at the time). `ai_text`, `ai_answer`, `ai_reason` and
 | Wrong names or words | Add a correction to the AI memory. |
 
 ---
+
+## 19. Combining alerts and must-hear speakers (optional)
+
+When many alerts arrive at once, announcing each one on its own means the
+speakers are woken, set to the announcement volume, played to and put back
+again for every alert. Google speakers make a connect sound and a volume beep
+each time, which is a lot of noise at night. *Combine alerts* fixes that.
+
+Open **Settings → Devices & services → Push Alert TTS → Configure** and expand
+**Combining and delivery**.
+
+### Combine alerts *(default off)*
+
+On: everything Push Alert TTS says goes into one queue, and one "session"
+speaks it:
+
+1. The speakers are woken and set to the announcement volume **once** (a
+   speaker already at that volume is left alone, so it doesn't beep).
+2. One alert on its own is said exactly as before.
+3. Several alerts that arrive together become one announcement, made into a
+   single audio file with exact pauses:
+   *"3 alerts have arrived."* (1 s) *"First alert:"* (1 s) *alert one* (2 s)
+   *"Second alert:"* (1 s) *alert two* (2 s) ... A leading "Alert," of each
+   alert's text is left out there, as the heading already says it.
+4. Alerts that arrive **while it is speaking** are kept and said straight
+   after: *"2 more alerts have arrived."* ... (or *"1 more alert has
+   arrived."*), with no new wake-up.
+5. The speakers are put back (volume, mute, off) only once nothing more has
+   arrived for *Keep the speakers ready for* seconds.
+
+Emergency alerts go first and never wait. The *Test announcement* button,
+emergency repeats and other messages use the same session. Each alert is still
+recorded on its own in the history, with `batch_size` and `batch_position` in
+its timings.
+
+The single audio file is made with [ffmpeg](https://ffmpeg.org/), which Home
+Assistant OS already includes. If it isn't available, or joining fails, the
+same words are said as one text instead (with shorter, natural pauses). Off =
+each alert is announced on its own, exactly as before.
+
+### Wait for more alerts *(default 3 seconds)*
+
+When the first alert of a session arrives, wait this long for others, so
+alerts arriving together are said together. Emergency alerts never wait.
+0 = speak at once.
+
+### Keep the speakers ready for *(default 60 seconds)*
+
+After speaking, keep the speakers awake at the announcement volume this long
+before putting them back, so an alert soon after doesn't cause another
+connect sound or volume beep. 0 = put them back straight away.
+
+### Must-hear speakers *(optional)*
+
+Speakers that must play every alert, for example the bedroom and the lounge.
+They must also be in the *Speakers* list. After each announcement Push Alert
+TTS checks that each of them really played it (each speaker in a Google speaker
+group reports "playing" on its own):
+
+1. A must-hear speaker that **didn't** play it hears it again on its own,
+   after the group has finished, starting with *"Missed alert TTS:"*. This is
+   tried up to *Retries* times (at least once).
+2. If it **still** didn't play it, each alert is sent to the *Phone /
+   fallback notification*, titled "not heard on <speaker>", with the alert's
+   link (see below) to open when you tap it.
+
+Empty = no check (problems are reported as before).
+
+### Must-hear speakers at night and Night condition *(optional)*
+
+While the *Night condition* is true, the night list is used instead, for
+example only the bedroom speaker: then a missed lounge speaker at night doesn't
+send a notification, but a missed bedroom speaker does.
+
+The night condition is a
+[template](https://www.home-assistant.io/docs/configuration/templating/) that
+is true at night. For example, "the phone is charging, and the bedroom TV is on
+or the lounge TV is off":
+
+```jinja
+{{ is_state('device_tracker.my_phone', 'home')
+   and states('sensor.my_phone_battery_state') in ['Charging', 'Full']
+   and (is_state('media_player.bedroom_tv', 'on')
+        or not is_state('media_player.lounge_tv', 'on')) }}
+```
+
+The phone sensors come from the
+[Companion app](https://companion.home-assistant.io/docs/core/sensors/). You can
+test a template under **Developer tools → Template**. If the template can't be
+worked out, it counts as day (the longer list is used, which is the safer
+choice). Empty = never night.
+
+### Link label *(default "Monitor Status")*
+
+Alerts often contain links. The link that follows this label in the alert's
+message is saved with the alert and opens when you tap a notification about
+it; it is never spoken. For example, Datadog alerts contain
+`Monitor Status <https://...>`. If no such link is found, the alert's Pushover
+link is used when it is a web link (not a "mailto:" reply link). The link is
+also shown on the review card (the AI wording becomes a link) and in the
+history.
+
+### Also show missed alerts in Home Assistant *(default off)*
+
+When a must-hear speaker didn't play an alert, also add a Home Assistant
+notification (the bell in the sidebar) with the alert and a link to open it.
+
+## 20. A voice with a backup for your own automations
+
+Push Alert TTS adds a text-to-speech entity, **Push Alert TTS Voice with
+backup** (for example `tts.push_alert_tts_voice_with_backup`). It speaks with
+the *Text-to-speech engine* you chose, with the same tries, and falls back to
+the *Backup text-to-speech engine* (and its voice name) when that fails. Use it
+anywhere Home Assistant asks for a text-to-speech engine, for example:
+
+```yaml
+action: tts.speak
+target:
+  entity_id: tts.push_alert_tts_voice_with_backup
+data:
+  media_player_entity_id: media_player.kitchen_speaker
+  message: The washing is done.
+```
+
+It offers the main voice's languages. See the
+[text-to-speech documentation](https://www.home-assistant.io/integrations/tts/)
+for more ways to use a voice.
 
 ## Acknowledgements
 

@@ -37,6 +37,8 @@ const STYLE = `
   button.primary { background: var(--primary-color); color: var(--text-primary-color, #fff); }
   button:disabled { opacity: 0.5; cursor: default; }
   tr.editor td { background: var(--secondary-background-color); }
+  a { color: var(--primary-color); text-decoration: none; }
+  a:hover { text-decoration: underline; }
   textarea { width: 100%; box-sizing: border-box; min-height: 56px; font: inherit;
              padding: 8px; border-radius: 6px; border: 1px solid var(--divider-color);
              background: var(--card-background-color); color: var(--primary-text-color); }
@@ -63,6 +65,12 @@ function el(tag, attrs = {}, ...children) {
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
   return node;
+}
+
+function linked(text, url) {
+  // The alert's own link (e.g. the monitor's status page), if it is a web link.
+  if (!url || !/^https?:\/\//i.test(String(url))) return text;
+  return el("a", { href: url, target: "_blank", rel: "noopener noreferrer", title: "Open the monitor" }, text);
 }
 
 function when(value) {
@@ -222,9 +230,9 @@ class PushAlertTtsReviewCard extends HTMLElement {
             el("details", {}, el("summary", {}, first), el("div", { class: "full" }, alert)),
           ),
           el("td", {},
-            row.ai_text || "-",
+            row.ai_text ? linked(row.ai_text, row.link) : "-",
             notAi && row.spoken
-              ? el("span", { class: "note" }, `Spoken instead: ${row.spoken}${row.reason ? ` (${String(row.reason).replace(/_/g, " ")})` : ""}`)
+              ? el("span", { class: "note" }, "Spoken instead: ", linked(String(row.spoken), row.link), row.reason ? ` (${String(row.reason).replace(/_/g, " ")})` : "")
               : null,
             row.backfilled ? el("span", { class: "note later" }, "AI wording added later") : null,
           ),
