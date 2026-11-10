@@ -150,7 +150,7 @@
               "must_hear_speakers": "Speakers that must play every alert (they must also be in the speakers list above). After each announcement, each one is checked; one that didn't play it hears it again on its own, starting with 'Missed alert TTS:'. If it still didn't play, each alert is sent to the fallback notification (with its link). Empty = no check.",
               "night_must_hear_speakers": "Used instead of the list above while the night condition is true (for example only the bedroom speaker). Empty = always use the list above.",
               "night_condition": "A template that is true at night, for example: {{ is_state('sensor.phone_battery_state', 'Charging') and is_state('media_player.bedroom_tv', 'on') }}. Empty = never night. If it can't be worked out, it counts as day.",
-              "link_label": "The text before the link to open from a notification, as it appears in your alerts, e.g. Monitor Status for Datadog ('Monitor Status <https://...>'). The link is never spoken. If no such link is found, the alert's Pushover link is used when it is a web link. Empty = Monitor Status.",
+              "link_label": "The text before the link to open from a notification, as it appears in your alerts, e.g. Monitor Status for Datadog alerts (the words Monitor Status followed by the link). The link is never spoken. If no such link is found, the alert's Pushover link is used when it is a web link. Empty = Monitor Status.",
               "missed_bell": "When a must-hear speaker didn't play an alert, also add a Home Assistant notification (the bell in the sidebar) with the alert and its link."
             }
           },
