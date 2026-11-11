@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.13.0"
+VERSION = "0.13.1"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -229,6 +229,7 @@ POLL_INTERVAL = 30  # while disconnected, check for alerts over the API this oft
 RETRY_MAX = 300
 WAKE_TIMEOUT = 3  # seconds to wait for a sleeping speaker to report its volume
 PLAYBACK_START_TIMEOUT = 15
+GROUP_CONNECT_WAIT = 10  # seconds for a woken group's speakers to report in
 GROUP_START_TIMEOUT = 10  # speaker group must start playing within this, else fall back
 PLAYBACK_END_TIMEOUT = 60
 # A speaker must stay stopped this long before the announcement counts as finished

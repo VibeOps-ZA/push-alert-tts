@@ -236,6 +236,13 @@ Leave this empty to keep the normal behaviour (each speaker on its own).
    form will tell you).
 
 How it works and its safety net:
+- Only the group is woken, once, when an announcement starts (since version
+  0.13.1). Every speaker connects at the same moment, so each makes at most
+  one connect sound. The speakers are never woken one by one (each would make
+  its own sound, a few seconds apart). Push Alert TTS then waits up to 10
+  seconds for each speaker to report its volume, sets the announce volume
+  where it differs, and plays. If the group was off, it is switched off again
+  afterwards (once, for all its speakers).
 - The announcement plays on the group, so every speaker starts together.
 - If the group is **unavailable** (for example a speaker in it is offline;
   Cast groups can disappear from Home Assistant then), each speaker in
@@ -252,7 +259,7 @@ How it works and its safety net:
 
 ### Wait for speakers to wake up *(default 10 seconds)*
 
-Speakers that were switched off (Google speakers report *off* when idle for
+Only used **without** a *Speaker group* (with a group, see above). Speakers that were switched off (Google speakers report *off* when idle for
 a while) take a few seconds to come back. If the announcement starts before
 that, the first words can be lost. Before speaking, Push Alert TTS waits up
 to this many seconds until every speaker in *Speakers* is on. When the time
@@ -265,22 +272,17 @@ an alert arrives, while the alert is still being worded (since version
 0.10.0), so they are usually awake by the time it speaks. Speakers that were
 off are switched off again afterwards.
 
-The *Speaker group* is not waited for: a Google Cast speaker group only comes
-on once something is played on it, so waiting for it would only add delay
-(version 0.9.0 did that, adding the full wait time when the speakers had been
-off).
+With a *Speaker group*, the speakers are not woken one by one (since version
+0.13.1): only the group is woken, once, as described above.
 
 ### Connect the speaker group early *(default off)*
 
-Only used with a *Speaker group*. Connecting to a Google Cast speaker group
-takes about 3 seconds. With this on, Push Alert TTS connects the group as soon
-as an alert arrives, while the alert is still being worded (by the AI, if you
-use it), so the announcement starts about 3 seconds sooner.
-
-Some speakers (for example Google Nest speakers) play a short connect sound
-when the group is connected, so the sound comes a few seconds before the
-announcement. That's why it is off by default. Turn it on if you don't mind
-the sound, or your speakers don't make one.
+Only used with a *Speaker group*. The group is always woken once before an
+announcement (see above); this setting only decides **when**. Off: when the
+announcement starts. On: as soon as an alert arrives, while it is still being
+worded (by the AI, if you use it), so the announcement starts a few seconds
+sooner. Either way it is the same single connect sound; with this on it just
+comes a few seconds before the announcement.
 
 ### Retries if an announcement fails or is cut short *(default 1, up to 5)*
 

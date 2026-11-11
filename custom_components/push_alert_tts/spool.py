@@ -268,11 +268,13 @@ class AlertSpool:
         runtime = self.runtime
         mark = _FanMarks([(i.timings, i.t0) for i in items])
         mark("speak_start_ms")
-        _group, _group_ok, ready, _down = runtime._targets()  # noqa: SLF001
+        group, group_ok, ready, _down = runtime._targets()  # noqa: SLF001
         if not ready:
             return {}
         try:
-            return await runtime._open_speakers(ready, mark)  # noqa: SLF001
+            return await runtime._open_speakers(  # noqa: SLF001
+                ready, mark, group if group_ok else None
+            )
         except Exception:  # noqa: BLE001 - speaking still wakes them
             _LOGGER.exception("Readying the speakers failed")
             return {}

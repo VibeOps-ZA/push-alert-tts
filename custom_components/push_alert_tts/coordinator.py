@@ -132,6 +132,7 @@ from .const import (
     EVENT_ACK,
     EVENT_ALERT,
     GENERATE_TIMEOUT,
+    GROUP_CONNECT_WAIT,
     GROUP_START_TIMEOUT,
     ISSUE_AI_OFFLINE,
     ISSUE_STOPPED,
@@ -2109,24 +2110,36 @@ class AlertTTS:
         """A voice set (main, backup, recorded phrase) for `text`."""
         return _Voices(self, text, self.options.get(CONF_TTS_ENTITY) or "", mark)
 
-    async def _open_speakers(self, ready: list[str], mark: _Marks) -> dict[str, Any]:
+    async def _open_speakers(
+        self, ready: list[str], mark: _Marks, group: str | None = None
+    ) -> dict[str, Any]:
         """Wake the speakers and set the volume (only where it differs).
 
-        Returns what is needed to put them back as they were.
+        With a usable speaker ``group``, only the group is woken (once), so
+        every speaker connects at the same moment with one connect sound;
+        the speakers are never woken one by one. Returns what is needed to
+        put them back as they were.
         """
-        initial = {s: self.hass.states.get(s) for s in ready}
+        initial = {s: self.hass.states.get(s) for s in [*ready, *([group] if group else [])]}
         prepared, self._prepared = self._prepared, None
         if prepared and time.monotonic() - prepared[0] < PREPARE_MAX_AGE:
             # Woken early: what they were before that decides what to restore.
             initial.update({s: st for s, st in prepared[1].items() if s in initial})
-        was_off = [s for s, st in initial.items() if st and st.state == STATE_OFF]
+        group_before = initial.pop(group, None) if group else None
         muted = [
             s
             for s, st in initial.items()
             if st and st.attributes.get("is_volume_muted")
         ]
+        if group:
+            await self._connect_group(group, ready, mark)
+            group_was_off = group_before is not None and group_before.state == STATE_OFF
+            was_off = [group] if group_was_off else []
+            levels = [self._volume(s) for s in ready]
+        else:
+            was_off = [s for s, st in initial.items() if st and st.state == STATE_OFF]
+            levels = await asyncio.gather(*(self._wake(s) for s in ready))
         restore: dict[str, Any] = {"previous": {}, "muted": muted, "was_off": was_off}
-        levels = await asyncio.gather(*(self._wake(s) for s in ready))
         target = round(self.volume / 100, 2)
         changed: dict[str, float | None] = {}
         for s, level in zip(ready, levels, strict=True):
@@ -2145,10 +2158,44 @@ class AlertTTS:
                 for s in changed
             ),
         )
-        # Only the speakers: a Cast speaker group comes up only once
-        # something is played on it, so waiting for it would just add delay.
-        await self._wait_awake(ready, mark)
+        if not group:
+            # Only the speakers: a Cast speaker group comes up only once
+            # something is played on it, so waiting for it would just add delay.
+            await self._wait_awake(ready, mark)
         return restore
+
+    def _volume(self, entity_id: str) -> float | None:
+        state = self.hass.states.get(entity_id)
+        return state.attributes.get("volume_level") if state else None
+
+    async def _connect_group(self, group: str, ready: list[str], mark: _Marks) -> bool:
+        """Wake the speaker group once (if off) and wait for its speakers.
+
+        Returns True if it was off just now. Waits up to GROUP_CONNECT_WAIT
+        seconds for every speaker to report its volume; a speaker that
+        doesn't is still set to the announcement volume (its old volume
+        can't be put back then).
+        """
+        state = self.hass.states.get(group)
+        was_off = state is not None and state.state == STATE_OFF
+        if was_off:
+            await self._call("media_player", "turn_on", group)
+            mark("group_connect_ms")
+            mark.note("group_connected", True)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + GROUP_CONNECT_WAIT
+        while loop.time() < deadline:
+            if all(self._volume(s) is not None for s in ready):
+                break
+            await asyncio.sleep(0.25)
+        else:
+            missing = [s for s in ready if self._volume(s) is None]
+            _LOGGER.info(
+                "%s did not report their volume after connecting %s",
+                ", ".join(missing),
+                group,
+            )
+        return was_off
 
     async def _restore_speakers(self, restore: Mapping[str, Any]) -> None:
         """Put volumes, mute and power back as they were before speaking."""
@@ -2173,7 +2220,7 @@ class AlertTTS:
         voices.start()
         restore: dict[str, Any] = {}
         try:
-            restore = await self._open_speakers(ready, mark)
+            restore = await self._open_speakers(ready, mark, group)
             await self._play_text(
                 text, notify_on_failure, mark, group, ready, voices=voices
             )
@@ -2335,6 +2382,44 @@ class AlertTTS:
         if self._speak_lock.locked():
             return
         group = self.speaker_group
+        group_state = self.hass.states.get(group) if group else None
+        if (
+            group
+            and group_state is not None
+            and group_state.state not in _BAD_STATES
+            and self.speakers
+            and group not in self.speakers
+        ):
+            # With a speaker group the speakers are never woken one by one
+            # (each would make its own connect sound): the group is woken
+            # once, when the announcement starts or (if chosen) now.
+            if not (
+                self.options.get(CONF_PRECONNECT_GROUP)
+                and group_state.state == STATE_OFF
+            ):
+                return
+            if not (
+                self._prepared
+                and time.monotonic() - self._prepared[0] < PREPARE_MAX_AGE
+            ):
+                self._prepared = (
+                    time.monotonic(),
+                    {
+                        s: self.hass.states.get(s)
+                        for s in [*self.speakers, group]
+                    },
+                )
+            group_mark = _Marks(timings, t0)
+
+            async def _connect() -> None:
+                if await self._call("media_player", "turn_on", group):
+                    group_mark.note("group_preconnected", True)
+                    group_mark("prepared_ms")
+
+            self.entry.async_create_background_task(
+                self.hass, _connect(), f"{DOMAIN}_prepare"
+            )
+            return
         speakers = [
             s
             for s in self.speakers

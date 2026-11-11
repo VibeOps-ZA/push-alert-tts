@@ -5,6 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-11
+
+### Fixed
+- **Speakers dinging several times, one after another, for every alert.** With a *Speaker group*, each speaker was
+  woken on its own (a connect sound each, a few seconds apart), then connected again when the group played (another
+  sound each), and switched off one by one afterwards. Now only the group is woken, once, so every speaker connects
+  at the same moment with at most one sound; the volume is set after the group is up (only where it differs), and a
+  group that was off is switched off once at the end. Speakers are still woken on their own only without a group,
+  when the group fails (fallback), or for a must-hear speaker that missed an alert.
+
+### Changed
+- *Connect the speaker group early* now only decides when the group is woken (when an alert arrives, or when the
+  announcement starts); the speakers are never woken one by one with a group.
+- *Wait for speakers to wake up* applies only without a speaker group; with one, Push Alert TTS waits up to 10 s for
+  the group's speakers to report in after waking it.
+
 ## [0.13.0] - 2026-11-10
 
 ### Added

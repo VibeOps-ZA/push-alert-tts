@@ -216,26 +216,37 @@ async def test_failed_tts_call_is_retried(
     assert not notify
 
 
-async def test_waits_for_speakers_to_wake_before_speaking(
+async def test_group_woken_once_then_waits_for_speakers(
     hass: HomeAssistant, mock_entry, no_listener
 ) -> None:
-    _states(hass)
-    hass.states.async_set("media_player.kitchen", "off", {"volume_level": 0.3})
+    """With a group, only the group is woken; its speakers report in after."""
+    _states(hass, group="off")
+    hass.states.async_set("media_player.kitchen", "off", {})
+    on: list[str] = []
+
+    async def turn_on(call: ServiceCall) -> None:
+        on.append(call.data["entity_id"])
+        hass.states.async_set(GROUP, "idle", {})
+        hass.loop.call_later(
+            0.6,
+            lambda: hass.states.async_set(
+                "media_player.kitchen", "idle", {"volume_level": 0.3}
+            ),
+        )
+
+    hass.services.async_register("media_player", "turn_on", turn_on)
+    async_mock_service(hass, "media_player", "turn_off")
     calls = _tts(hass, [GOOD])
-    async_mock_service(hass, "media_player", "volume_set")
+    vol = async_mock_service(hass, "media_player", "volume_set")
     runtime = await _setup(hass, mock_entry, **{CONF_WAKE_WAIT: 5})
-    hass.loop.call_later(
-        0.6,
-        lambda: hass.states.async_set(
-            "media_player.kitchen", "idle", {"volume_level": 0.3}
-        ),
-    )
     timings: dict = {}
-    t0 = time.monotonic()
-    await runtime.speak(TEXT, timings=timings, t0=t0)
-    assert timings["awake_ms"] >= 600
-    assert timings["tts_call_ms"] >= timings["awake_ms"]
-    assert "awake_timeout" not in timings
+    await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
+    assert on == [GROUP]  # never each speaker
+    assert timings["group_connected"] is True
+    assert timings["tts_call_ms"] >= 600  # waited for the kitchen's volume
+    assert ("media_player.kitchen", 0.6) in [
+        (c.data["entity_id"], c.data["volume_level"]) for c in vol
+    ]
     assert len(calls) == 1
 
 
@@ -255,17 +266,20 @@ async def test_group_off_is_not_waited_for(
     assert timings["outcome"] == "ok"
 
 
-async def test_wake_wait_gives_up_and_speaks_anyway(
+async def test_group_connect_gives_up_and_speaks_anyway(
     hass: HomeAssistant, mock_entry, no_listener
 ) -> None:
-    _states(hass)
-    hass.states.async_set("media_player.kitchen", "off", {"volume_level": 0.3})
+    """A speaker that never reports its volume doesn't stop the announcement."""
+    _states(hass, group="off")
+    hass.states.async_set("media_player.kitchen", "off", {})
+    async_mock_service(hass, "media_player", "turn_on")
+    async_mock_service(hass, "media_player", "turn_off")
     calls = _tts(hass, [GOOD])
     async_mock_service(hass, "media_player", "volume_set")
-    runtime = await _setup(hass, mock_entry, **{CONF_WAKE_WAIT: 1})
-    timings: dict = {}
-    await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
-    assert timings["awake_timeout"] is True
+    with patch(f"{C}.GROUP_CONNECT_WAIT", 1):
+        runtime = await _setup(hass, mock_entry)
+        timings: dict = {}
+        await runtime.speak(TEXT, timings=timings, t0=time.monotonic())
     assert timings["tts_call_ms"] >= 1000
     assert len(calls) == 1
     assert timings["outcome"] == "ok"
@@ -323,12 +337,14 @@ def _sleepy_speakers(hass: HomeAssistant):
     async def turn_on(call: ServiceCall) -> None:
         for e in ids(call):
             on.append(e)
-            hass.states.async_set(e, "idle", {"volume_level": 0.4})
+            for x in [e, *(MEMBERS if e == GROUP else [])]:
+                hass.states.async_set(x, "idle", {"volume_level": 0.4})
 
     async def turn_off(call: ServiceCall) -> None:
         for e in ids(call):
             off.append(e)
-            hass.states.async_set(e, "off", {})
+            for x in [e, *(MEMBERS if e == GROUP else [])]:
+                hass.states.async_set(x, "off", {})
 
     hass.services.async_register("media_player", "turn_on", turn_on)
     hass.services.async_register("media_player", "turn_off", turn_off)
@@ -347,9 +363,10 @@ def _alert() -> dict:
     }
 
 
-async def test_speakers_woken_before_speaking_and_put_back(
+async def test_group_woken_once_and_put_back(
     hass: HomeAssistant, mock_entry, no_listener
 ) -> None:
+    """Speakers are never woken one by one: the group once, off again after."""
     on, off = _sleepy_speakers(hass)
     _tts(hass, [GOOD])
     async_mock_service(hass, "media_player", "volume_set")
@@ -358,10 +375,8 @@ async def test_speakers_woken_before_speaking_and_put_back(
     await runtime._on_alerts([_alert()], False)
     await hass.async_block_till_done(wait_background_tasks=True)
     timings = runtime.last_alert["timings"]
-    assert "prepared_ms" in timings
-    assert set(on) >= set(MEMBERS)
-    assert GROUP not in on  # pre-connecting the group is off by default
-    assert set(off) == set(MEMBERS)  # they were off before, so off again after
+    assert on == [GROUP]
+    assert off == [GROUP]  # it was off before, so off again after
     assert timings["outcome"] == "ok"
 
 
@@ -383,7 +398,8 @@ async def test_preconnect_group_when_chosen(
         await runtime._on_alerts([_alert()], False)
         await hass.async_block_till_done(wait_background_tasks=True)
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert GROUP in on
+    assert on == [GROUP]  # connected early, once; never each speaker
+    assert ai_calls == [[]] or ai_calls == [[GROUP]]
     assert runtime.last_alert["timings"]["group_preconnected"] is True
 
 
@@ -412,4 +428,4 @@ async def test_second_alert_keeps_first_snapshot(
     await hass.async_block_till_done(wait_background_tasks=True)
     runtime._prepare({}, time.monotonic())  # speakers now awake; keep the first
     await runtime.speak(TEXT)
-    assert set(off) == set(MEMBERS)
+    assert off == [GROUP]
