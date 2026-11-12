@@ -5,6 +5,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-12
+
+### Added
+- **Several addresses per AI server.** *LLM server address(es)*, *Backup LLM server address(es)* and the new
+  *Emergency LLM server address(es)* each take one address or several, separated by commas, the preferred one first
+  (for example a PC's Ethernet then its Wi-Fi address). When an address can't be reached the next one is tried for
+  the same alert, the address that answered is tried first next time, and the 5-minute check goes back to the first
+  address as soon as it answers.
+- **Emergency AI server** (*Emergency LLM server address(es)* and *Emergency model*, optional): a last resort tried
+  only when neither the main nor the backup server can be reached, within the same time limit, never for emergency
+  (priority 2) alerts. It is checked only while the main and backup servers can't be used, so a server started on
+  demand isn't woken needlessly. It gets the same instructions and memory as the other servers.
+- **Backup AI reachable** sensor (`binary_sensor.push_alert_tts_backup_ai_reachable`): the backup server is now
+  checked every 5 minutes too.
+- **AI wording source** sensor (`sensor.push_alert_tts_ai_wording_source`): who worded the last alert - `main`,
+  `backup`, `emergency` or `template` (the normal text) - with every server's state in its attributes.
+- *AI reachable* gained the attributes *address_in_use*, *addresses*, *emergency_set* and *any_ai_usable*.
+
+### Changed
+- The **AI unreachable repair** is now raised only when **no** AI server can be used for the set time (alerts are
+  getting the normal text). A main server that is down while the backup or emergency server does the wording no
+  longer raises it; the sensors show that instead.
+- The server address fields are plain text fields (so several addresses fit); every address is checked when saving.
+
 ## [0.13.1] - 2026-11-11
 
 ### Fixed

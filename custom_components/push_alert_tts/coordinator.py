@@ -53,7 +53,10 @@ from .const import (
     AI_BACKFILL_MAX,
     AI_BACKFILL_PAUSE,
     AI_BACKFILL_TIMEOUT,
+    AI_BACKUP,
     AI_CORRECTION_MAX,
+    AI_EMERGENCY,
+    AI_MAIN,
     AI_OFFLINE_SKIP,
     AI_PROBE_INTERVAL,
     AI_PROBE_TIMEOUT,
@@ -71,7 +74,9 @@ from .const import (
     CONF_AI_BACKUP_MODEL,
     CONF_AI_BACKUP_URL,
     CONF_AI_CONTEXT,
+    CONF_AI_EMERGENCY_MODEL,
     CONF_AI_EMERGENCY_TIMEOUT,
+    CONF_AI_EMERGENCY_URL,
     CONF_AI_ENABLED,
     CONF_AI_GPU_LAYERS,
     CONF_AI_INSTRUCTIONS,
@@ -705,7 +710,16 @@ class AlertTTS:
         self.ai_down_since: datetime | None = None
         self._ai_issue_raised = False
         self._last_wake = 0.0  # monotonic time of the last wake-up press
-        self.last_server: str | None = None  # "main" or "backup": last to answer
+        self.last_server: str | None = None  # "main", "backup", "emergency": last to answer
+        # Each server: the address that answered last (tried first), whether it
+        # answers (None = not known yet), and since when no server is usable.
+        self.ai_url_in_use: dict[str, str] = {}
+        self.ai_server_up: dict[str, bool | None] = {
+            AI_MAIN: None,
+            AI_BACKUP: None,
+            AI_EMERGENCY: None,
+        }
+        self.ai_none_since: datetime | None = None
         self.ai_checked = False  # reachability known (checked or an alert tried)
         self.last_ai: dict[str, Any] | None = None  # last AI attempt
         self.review: deque[dict[str, Any]] = deque(maxlen=AI_REVIEW_MAX)
@@ -831,13 +845,49 @@ class AlertTTS:
     def ai_enabled(self) -> bool:
         return bool(
             self.options.get(CONF_AI_ENABLED)
-            and self.options.get(CONF_AI_URL)
+            and self.ai_urls(AI_MAIN)
             and self.options.get(CONF_AI_MODEL)
         )
 
+    def ai_urls(self, server: str) -> list[str]:
+        """The server's addresses as set, in order of preference."""
+        key = {
+            AI_MAIN: CONF_AI_URL,
+            AI_BACKUP: CONF_AI_BACKUP_URL,
+            AI_EMERGENCY: CONF_AI_EMERGENCY_URL,
+        }[server]
+        return api.url_list(self.options.get(key))
+
+    def _ai_try_order(self, server: str) -> list[str]:
+        """The address that answered last first, then the others in order."""
+        urls = self.ai_urls(server)
+        used = self.ai_url_in_use.get(server)
+        if used in urls:
+            return [used, *(u for u in urls if u != used)]
+        return urls
+
     @property
     def ai_backup_configured(self) -> bool:
-        return bool(self.options.get(CONF_AI_BACKUP_URL))
+        return bool(self.ai_urls(AI_BACKUP))
+
+    @property
+    def ai_emergency_configured(self) -> bool:
+        return bool(self.ai_urls(AI_EMERGENCY))
+
+    @property
+    def ai_usable(self) -> bool | None:
+        """Can any AI server word an alert right now? None = not known yet."""
+        up = self.ai_server_up
+        states = [up[AI_MAIN]]
+        if self.ai_backup_allowed:
+            states.append(up[AI_BACKUP])
+        if self.ai_emergency_configured:
+            states.append(up[AI_EMERGENCY])
+        if any(state for state in states):
+            return True
+        if all(state is False for state in states):
+            return False
+        return None
 
     @property
     def ai_backup_allowed(self) -> bool:
@@ -1470,10 +1520,14 @@ class AlertTTS:
         """Ask the LLM to word the alert. None when AI wording is off.
 
         Never raises. ``text`` is None when the normal text must be used, and
-        ``reason`` then says why. When the main server can't be reached, the
-        backup server (if set and allowed) is tried within the same time
-        limit; ``server`` says which one answered. ``max_timeout`` caps the
-        time limit; ``track=False`` leaves the last-AI-attempt state alone.
+        ``reason`` then says why. Each server may have several addresses (for
+        example a PC's Ethernet and Wi-Fi addresses): when one can't be
+        reached the next is tried. When the main server can't be reached at
+        any address, the backup server (if set and allowed) and then the
+        emergency server (if set; never for emergency alerts) are tried, all
+        within the same time limit; ``server`` says which one answered.
+        ``max_timeout`` caps the time limit; ``track=False`` leaves the
+        last-AI-attempt state alone.
         """
         if not self.ai_enabled:
             return None
@@ -1486,6 +1540,7 @@ class AlertTTS:
             "server": None,
         }
         main_reason: str | None = None
+        unreachable = (llm.REASON_OFFLINE, llm.REASON_OFFLINE_RECENT)
         if len(alerts) != 1 or (spoken and spoken.get("outcome") == OUTCOME_MULTIPLE):
             result["reason"] = llm.REASON_MULTIPLE
         else:
@@ -1504,28 +1559,36 @@ class AlertTTS:
                 main_reason = llm.REASON_OFFLINE_RECENT
             else:
                 main_reason = await self._ask_server(
-                    result, alerts[0], timeout, backup=False
+                    result, alerts[0], timeout, AI_MAIN
                 )
                 if main_reason == llm.REASON_OFFLINE:
                     self._ai_offline_until = time.monotonic() + AI_OFFLINE_SKIP
             result["reason"] = main_reason
-            if main_reason in (llm.REASON_OFFLINE, llm.REASON_OFFLINE_RECENT):
-                left = timeout - (time.monotonic() - started)
-                if self.ai_backup_allowed and left >= 1:
-                    backup_reason = await self._ask_server(
-                        result, alerts[0], int(left), backup=True
+            if main_reason in unreachable:
+                # Next servers, in order, while none has answered at all.
+                others = []
+                if self.ai_backup_allowed:
+                    others.append(AI_BACKUP)
+                if self.ai_emergency_configured and not emergency:
+                    others.append(AI_EMERGENCY)
+                for server in others:
+                    left = timeout - (time.monotonic() - started)
+                    if left < 1:
+                        break
+                    reason = await self._ask_server(
+                        result, alerts[0], int(left), server
                     )
+                    self._set_server_up(server, reason)
                     if result["text"]:
                         result["reason"] = None
-                    elif backup_reason not in (
-                        llm.REASON_OFFLINE,
-                        llm.REASON_OFFLINE_RECENT,
-                    ):
-                        result["reason"] = backup_reason
+                        break
+                    if reason not in unreachable:
+                        result["reason"] = reason  # it answered, but badly
+                        break
         result["seconds"] = round(time.monotonic() - started, 2)
         if main_reason == llm.REASON_OFFLINE:
             self._set_ai_reachable(False)
-        elif main_reason is not None or result["server"] == "main":
+        elif main_reason is not None or result["server"] == AI_MAIN:
             if main_reason not in (
                 llm.REASON_OFFLINE_RECENT,
                 llm.REASON_TIMEOUT,
@@ -1537,68 +1600,113 @@ class AlertTTS:
                 **result,
                 "time": dt_util.utcnow().isoformat(timespec="seconds"),
             }
+            self.update_entities()
         return result
+
+    @callback
+    def _set_server_up(self, server: str, reason: str | None) -> None:
+        """Record whether the backup or emergency server answered an alert."""
+        if reason in (llm.REASON_OFFLINE, llm.REASON_OFFLINE_RECENT):
+            up = False
+        elif reason in (llm.REASON_TIMEOUT, llm.REASON_ERROR):
+            return  # can't tell
+        else:
+            up = True
+        if self.ai_server_up.get(server) is not up:
+            self.ai_server_up[server] = up
+            self._update_ai_issue()
+            self.update_entities()
 
     async def _ask_server(
         self,
         result: dict[str, Any],
         alert: Mapping[str, Any],
         timeout: int,
-        *,
-        backup: bool,
+        server: str,
     ) -> str | None:
-        """Ask the main or backup server. Fills ``result``; returns the reason."""
+        """Ask one server (main, backup or emergency), trying its addresses in
+        turn while they can't be reached. Fills ``result``; returns the reason."""
         opts = self.options
         max_words = self._ai_number(CONF_AI_MAX_WORDS, DEFAULT_AI_MAX_WORDS, 200)
-        if backup:
-            url = str(opts.get(CONF_AI_BACKUP_URL))
-            model = str(opts.get(CONF_AI_BACKUP_MODEL) or opts.get(CONF_AI_MODEL))
-            # Context size and GPU layers belong to the main machine.
-            context_size, keep_alive, gpu_layers = None, None, None
-        else:
-            url = str(opts.get(CONF_AI_URL))
+        if server == AI_MAIN:
             model = str(opts.get(CONF_AI_MODEL))
             context_size, keep_alive, gpu_layers = self._ai_model_settings()
-        name = "backup" if backup else "main"
-        try:
-            answer = await llm.ask(
-                async_get_clientsession(self.hass),
-                api=opts.get(CONF_AI_API) or AI_API_OLLAMA,
-                url=url,
-                model=model,
-                system=llm.system_prompt(
-                    opts.get(CONF_AI_INSTRUCTIONS), self.memory, max_words
-                ),
-                user=llm.alert_text(alert),
-                timeout=timeout,
-                api_key=opts.get(CONF_AI_API_KEY) or None,
-                max_tokens=max(60, max_words * 4),
-                context_size=context_size,
-                keep_alive=keep_alive,
-                gpu_layers=gpu_layers,
+        else:
+            key = CONF_AI_BACKUP_MODEL if server == AI_BACKUP else CONF_AI_EMERGENCY_MODEL
+            model = str(opts.get(key) or opts.get(CONF_AI_MODEL))
+            # Context size, keep-alive and GPU layers belong to the main machine.
+            context_size, keep_alive, gpu_layers = None, None, None
+        started = time.monotonic()
+        reason: str | None = llm.REASON_OFFLINE
+        for index, url in enumerate(self._ai_try_order(server)):
+            # The whole time limit for the first address; what is left for the next.
+            left = timeout if index == 0 else int(timeout - (time.monotonic() - started))
+            if left < 1:
+                break
+            try:
+                answer = await llm.ask(
+                    async_get_clientsession(self.hass),
+                    api=opts.get(CONF_AI_API) or AI_API_OLLAMA,
+                    url=url,
+                    model=model,
+                    system=llm.system_prompt(
+                        opts.get(CONF_AI_INSTRUCTIONS), self.memory, max_words
+                    ),
+                    user=llm.alert_text(alert),
+                    timeout=left,
+                    api_key=opts.get(CONF_AI_API_KEY) or None,
+                    max_tokens=max(60, max_words * 4),
+                    context_size=context_size,
+                    keep_alive=keep_alive,
+                    gpu_layers=gpu_layers,
+                )
+            except llm.AIError as err:
+                _LOGGER.info(
+                    "AI wording (%s server, %s) not used (%s): %s",
+                    server,
+                    url,
+                    err.reason,
+                    err.detail,
+                )
+                reason = err.reason
+                if err.reason == llm.REASON_OFFLINE:
+                    continue  # this address can't be reached: try the next
+                self.ai_url_in_use[server] = url  # it is there
+                return reason
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("AI wording (%s server) failed", server)
+                return llm.REASON_ERROR
+            self.ai_url_in_use[server] = url
+            result["server"] = server
+            result["answer"] = answer
+            result["text"], reason = llm.check_answer(
+                answer, max_words, opts.get(CONF_AI_START_PATTERN) or None
             )
-        except llm.AIError as err:
-            _LOGGER.info(
-                "AI wording (%s server) not used (%s): %s", name, err.reason, err.detail
-            )
-            return err.reason
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("AI wording (%s server) failed", name)
-            return llm.REASON_ERROR
-        result["server"] = name
-        result["answer"] = answer
-        result["text"], reason = llm.check_answer(
-            answer, max_words, opts.get(CONF_AI_START_PATTERN) or None
-        )
-        self.last_server = name
+            self.last_server = server
+            return reason
         return reason
 
-    # -- is the LLM server there? -------------------------------------------------
+    # -- are the LLM servers there? -----------------------------------------------
+    async def _probe_server(self, server: str) -> bool:
+        """Does any of the server's addresses answer? The preferred (first)
+        address is checked first, so the server goes back to it when it can."""
+        session = async_get_clientsession(self.hass)
+        for url in self.ai_urls(server):
+            if await llm.ping(session, url, AI_PROBE_TIMEOUT):
+                self.ai_url_in_use[server] = url
+                return True
+        return False
+
     async def async_check_ai(self) -> None:
-        """Every few minutes: does the LLM server answer? (Loads no model.)"""
+        """Every few minutes: do the LLM servers answer? (Loads no model.)
+
+        The emergency server is only checked while the main and backup
+        servers can't be used, so a server started on demand isn't woken
+        needlessly."""
         if self._stopping or not self.ai_enabled:
             self._clear_ai_issue()
             self.ai_down_since = None
+            self.ai_none_since = None
             return
         if not (
             self.ai_auto_backfill
@@ -1606,16 +1714,20 @@ class AlertTTS:
             or self.options.get(CONF_AI_WAKE_ENTITY)
         ):
             return
-        reachable = await llm.ping(
-            async_get_clientsession(self.hass),
-            str(self.options.get(CONF_AI_URL)),
-            AI_PROBE_TIMEOUT,
-        )
-        self._set_ai_reachable(reachable)
+        main = await self._probe_server(AI_MAIN)
+        if self.ai_backup_configured:
+            self.ai_server_up[AI_BACKUP] = await self._probe_server(AI_BACKUP)
+        backup_ok = self.ai_backup_allowed and bool(self.ai_server_up[AI_BACKUP])
+        if self.ai_emergency_configured and not main and not backup_ok:
+            self.ai_server_up[AI_EMERGENCY] = await self._probe_server(AI_EMERGENCY)
+        self._set_ai_reachable(main)
+        self.update_entities()
 
     @callback
     def _set_ai_reachable(self, reachable: bool) -> None:
+        """The main server answered (or not)."""
         now = dt_util.utcnow()
+        self.ai_server_up[AI_MAIN] = reachable
         if not self.ai_checked:
             self.ai_checked = True
             self.update_entities()
@@ -1624,31 +1736,11 @@ class AlertTTS:
                 self.ai_down_since = now
                 self.update_entities()
             self._wake_ai()
-            minutes = self.ai_offline_alert_minutes
-            if (
-                minutes
-                and not self._ai_issue_raised
-                and now - self.ai_down_since >= timedelta(minutes=minutes)
-            ):
-                self._ai_issue_raised = True
-                ir.async_create_issue(
-                    self.hass,
-                    DOMAIN,
-                    ISSUE_AI_OFFLINE,
-                    is_fixable=False,
-                    severity=ir.IssueSeverity.WARNING,
-                    translation_key=ISSUE_AI_OFFLINE,
-                    translation_placeholders={
-                        "url": str(self.options.get(CONF_AI_URL)),
-                        "since": dt_util.as_local(self.ai_down_since).strftime(
-                            "%Y-%m-%d %H:%M"
-                        ),
-                    },
-                )
+            self._update_ai_issue()
             return
         since, self.ai_down_since = self.ai_down_since, None
         self._last_wake = 0.0
-        self._clear_ai_issue()
+        self._update_ai_issue()
         if since is not None:
             self.update_entities()
         if since is None or not self.ai_auto_backfill or self._stopping:
@@ -1661,6 +1753,46 @@ class AlertTTS:
             self.async_reprocess_ai_quietly(min(days, MAX_HISTORY_DAYS), delay=True),
             f"{DOMAIN}_ai_backfill",
         )
+
+    @callback
+    def _update_ai_issue(self) -> None:
+        """Raise the repair only when no AI server can be used (alerts then get
+        the normal text) for the set time; clear it as soon as one can."""
+        if self.ai_usable is not False:
+            self.ai_none_since = None
+            self._clear_ai_issue()
+            return
+        now = dt_util.utcnow()
+        if self.ai_none_since is None:
+            self.ai_none_since = now
+        minutes = self.ai_offline_alert_minutes
+        if (
+            minutes
+            and not self._ai_issue_raised
+            and now - self.ai_none_since >= timedelta(minutes=minutes)
+        ):
+            self._ai_issue_raised = True
+            servers = [AI_MAIN]
+            if self.ai_backup_configured:
+                servers.append(AI_BACKUP)
+            if self.ai_emergency_configured:
+                servers.append(AI_EMERGENCY)
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_AI_OFFLINE,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_AI_OFFLINE,
+                translation_placeholders={
+                    "url": ", ".join(
+                        url for server in servers for url in self.ai_urls(server)
+                    ),
+                    "since": dt_util.as_local(self.ai_none_since).strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                },
+            )
 
     @callback
     def _wake_ai(self) -> None:

@@ -776,7 +776,9 @@ If you renamed anything, use the names shown on the device page instead.
 | **Pushover connected** `binary_sensor.push_alert_tts_pushover_connected` | Connected / Disconnected. Its *status* attribute is `connected`, `reconnecting`, `login_required` or `stopped`, and *last_error* says why. Since 0.10.0 also: *drops* (times a working connection dropped since Home Assistant started), *last_drop* / *last_drop_reason*, *polled_alerts* / *last_poll* (alerts collected while disconnected), *keepalive_interval_s* (longest recent gap between Pushover's keep-alives) and *dead_after_s* (silence after which it reconnects). |
 | **Last alert** `sensor.push_alert_tts_last_alert` | When the last alert arrived. Attributes: title, message, app, priority, count, queued, announced, spoken_text, pending_emergencies, and (since 0.5.0) spoken_source (`ai` or `filter`), filter_text, ai_text, ai_reason, ai_seconds and timings. |
 | **AI review** `sensor.push_alert_tts_ai_review` | How many alerts the AI looked at in the last 3 days. Its *alerts* attribute lists them, newest first: the alert as received, what was spoken, the AI's text and the reason if it wasn't used. Not saved in the recorder database. See [section 18](#18-ai-wording-with-a-local-llm-optional). |
-| **AI reachable** `binary_sensor.push_alert_tts_ai_reachable` | Connected / Disconnected: whether the main LLM server answers (unknown until first checked; unavailable while AI wording is off). Attributes: *unreachable_since*, *last_answer_from* (`main` or `backup`), *backup_set*, *backup_allowed_now*. |
+| **AI reachable** `binary_sensor.push_alert_tts_ai_reachable` | Connected / Disconnected: whether the main LLM server answers at any of its addresses (unknown until first checked; unavailable while AI wording is off). Attributes: *unreachable_since*, *last_answer_from* (`main`, `backup` or `emergency`), *address_in_use*, *addresses*, *backup_set*, *backup_allowed_now*, *emergency_set*, *any_ai_usable* (since 0.14.0: `true` while any server can word alerts). |
+| **Backup AI reachable** `binary_sensor.push_alert_tts_backup_ai_reachable` | Since 0.14.0. Connected / Disconnected: whether the backup LLM server answers (unknown until first checked; unavailable without a backup server). Attributes: *address_in_use*, *addresses*, *allowed_now* (its *Use the backup only while* entity is on). |
+| **AI wording source** `sensor.push_alert_tts_ai_wording_source` | Since 0.14.0. Who worded the last alert: `main`, `backup` or `emergency` (an AI server), or `template` (the normal text was spoken: AI unreachable, too slow, a bad answer, or several alerts at once). Attributes: *last_attempt*, *reason*, *seconds*, *main_reachable*, *backup_reachable*, *emergency_reachable*, *any_ai_usable*, *no_ai_since* (when no server could be used), *addresses_in_use*. |
 | **Re-word missed alerts** `button.push_alert_tts_re_word_missed_alerts` | Asks the AI to word the last 3 days' alerts that got no AI text, for the AI review list. Nothing is spoken. Same as the `push_alert_tts.reprocess_ai` action. |
 | **Voice with backup** `tts.push_alert_tts_voice_with_backup` | A text-to-speech voice for your own automations: your main voice with its tries, else the backup voice ([section 20](#20-a-voice-with-a-backup-for-your-own-automations)). |
 | **AI correction** `text.push_alert_tts_ai_correction` | Type a correction for the AI in plain words and press Enter: it is added to the AI memory and the box clears. Its *memory* attribute shows the whole memory. |
@@ -1176,8 +1178,14 @@ It is **off by default**.
   the time limit, an empty answer, an answer that is too long, contains
   symbols, links or code, or doesn't start the way you asked (see *AI answer
   must start with*). **No alert is ever lost because of the AI.**
-- If the LLM server can't be reached at all, the AI is skipped for the next
-  minute, so a run of alerts isn't held up while the PC is off.
+- Each server may have **several addresses** (for example a PC's Ethernet and
+  Wi-Fi addresses). When one can't be reached, the next is tried straight
+  away.
+- If the main LLM server can't be reached at any address, the **backup**
+  server (if set) and then the **emergency** server (if set) are tried, all
+  within the same time limit. If none can be reached, the main server is
+  skipped for the next minute, so a run of alerts isn't held up while the PC
+  is off.
 - **Emergency** (priority 2) alerts wait for the AI at most a few seconds
   (default 5) and are then announced regardless.
 - Several queued alerts arriving together still get the
@@ -1222,7 +1230,7 @@ It is **off by default**.
 |---|---|
 | **Use AI wording** | On/off. Off = alerts are spoken exactly as before 0.5.0. |
 | **Server type** | **Ollama**, or **OpenAI-compatible** for the other servers. With Ollama the model's "thinking" is switched off, which makes thinking models answer far faster. |
-| **LLM server address** | Ollama: `http://<pc address>:11434`. LM Studio: `http://<pc address>:1234/v1`. Only the address and port are needed; the rest of the path is added. |
+| **LLM server address(es)** | Ollama: `http://<pc address>:11434`. LM Studio: `http://<pc address>:1234/v1`. Only the address and port are needed; the rest of the path is added. **Several addresses** of the same PC can be entered, separated by commas, the preferred one first, for example its Ethernet then its Wi-Fi address: `http://192.168.1.50:11434, http://192.168.1.51:11434`. When an address can't be reached (about 5 seconds) the next one is tried, the address that answered is tried first for the next alert, and the 5-minute check goes back to the first one as soon as it answers. Give **each** network adapter a fixed IP (a DHCP reservation in your router). |
 | **Model** | The model name exactly as the server lists it, e.g. `qwen3.5:4b` (`ollama list` shows them). |
 | **API key** *(optional)* | Only if your server needs one. It is saved in Home Assistant's storage and removed from diagnostics downloads. |
 | **Wait for the AI at most** | Seconds (default 60). The longest an alert waits for the AI before the normal text is spoken. A long limit gives a busy or just-woken PC the best chance; it only matters when the PC is on but slow, because an unreachable server is noticed within about 5 seconds. |
@@ -1236,16 +1244,36 @@ It is **off by default**.
 | **AI memory** | Plain-language corrections, one per line, sent with **every** alert (see below). |
 | **Re-word missed alerts when the AI is back** | On by default. When the LLM server answers again after being unreachable (for example the PC was asleep), the alerts that got the normal text meanwhile are worded by the AI, so they appear in the [AI review](#reviewing-what-it-says) list ready for corrections. **Nothing is spoken.** It does the same as the `push_alert_tts.reprocess_ai` action (section 14), for at least the last 3 days. |
 | **Wake the AI server with** *(optional)* | A button, input button or script that wakes the PC running the LLM, for example a button from Home Assistant's [Wake on LAN integration](https://www.home-assistant.io/integrations/wake_on_lan/). It is pressed when the server stops answering, at most once every 10 minutes while it stays down. Whether the PC wakes depends on its network card and BIOS: over Wi-Fi usually only from sleep, over Ethernet often also from shut down. Empty = off. |
-| **Backup LLM server address** *(optional)* | A second LLM server (same server type and API key), used **only** when the main one can't be reached, within the same *Wait for the AI* time. If both fail, the normal text is spoken as usual. Context size, GPU layers and keep-loaded settings are **not** sent to the backup (they belong to the main PC), so it uses its own defaults; the first answer after it loads the model can be slower. Empty = no backup. |
+| **Backup LLM server address(es)** *(optional)* | A second LLM server (same server type and API key), used **only** when the main one can't be reached at any of its addresses, within the same *Wait for the AI* time. Several addresses can be entered, separated by commas, as above. If both fail, the emergency server (below) is tried if set, else the normal text is spoken as usual. Context size, GPU layers and keep-loaded settings are **not** sent to the backup (they belong to the main PC), so it uses its own defaults; the first answer after it loads the model can be slower. Empty = no backup. |
 | **Backup model** *(optional)* | The model name on the backup server. Empty = the same model as the main one. |
 | **Use the backup only while** *(optional)* | Any entity; the backup is used only while its state is `on`. For example a laptop that must only be used on mains power: pick a sensor or [template helper](https://www.home-assistant.io/integrations/template/) that is on while it's plugged in. Empty = whenever the main server is down. |
-| **Repair alert when the AI is unreachable for** | Minutes (default 30; `0` = off). If the LLM server hasn't answered for this long, a repair appears under **Settings → System → Repairs** ([about repairs](https://www.home-assistant.io/integrations/repairs/)), with the address and since when. It clears itself when the server answers again. Alerts are still spoken with the normal text meanwhile. |
+| **Emergency LLM server address(es)** *(optional, since 0.14.0)* | A last-resort LLM server, tried only when **neither** the main nor the backup server can be reached, within the same *Wait for the AI* time. For example a small model on a low-power computer (a Raspberry Pi) that is started only when needed - see [An emergency server](#an-emergency-server-optional) below. It is **never** used for emergency (priority 2) alerts: they can wait only a few seconds. Same server type and API key; several addresses can be entered, separated by commas. Empty = none. |
+| **Emergency model** *(optional)* | The model name on the emergency server, usually a small one (for example `qwen3:1.7b`). Empty = the same model as the main one. |
+| **Repair alert when the AI is unreachable for** | Minutes (default 30; `0` = off). If **no** AI server (main, backup or emergency) has been usable for this long - so alerts are getting the normal text - a repair appears under **Settings → System → Repairs** ([about repairs](https://www.home-assistant.io/integrations/repairs/)), with the addresses and since when. While the backup or emergency server is doing the wording there is no repair: the [AI reachable sensors](#9-what-each-entity-does) show which servers answer, and *AI wording source* shows who worded the last alert. It clears itself as soon as a server answers again. Alerts are still spoken with the normal text meanwhile. |
 
-How Push Alert TTS knows the server is there: every 5 minutes (only while
-*Re-word missed alerts*, the repair alert or *Wake the AI server with* is on) it sends a plain web request to the
-server address, the same as opening it in a browser. That loads no model and
-takes no graphics-card time. Real alerts also count: an alert that can't
-reach the server marks it unreachable, and any answer marks it back.
+How Push Alert TTS knows the servers are there: every 5 minutes (only while
+*Re-word missed alerts*, the repair alert or *Wake the AI server with* is on) it sends a plain web request to each
+address of the main and backup servers in turn (the preferred address first), the same as opening it in a browser.
+That loads no model and takes no graphics-card time. The emergency server is checked only while neither the main nor
+the backup server can be used, so a server that is started on demand isn't woken for nothing. Real alerts also
+count: an alert that can't reach a server marks it unreachable, and any answer marks it back.
+
+### An emergency server *(optional)*
+
+The emergency server is for the rare time when every normal AI server is off at once (both PCs asleep or switched
+off). A small model on an always-on low-power computer can still word alerts then, slowly and less well, instead of
+the normal text. Things to know:
+
+- **It is slow.** On a Raspberry Pi 4, a model of about 1-2 billion parameters needs tens of seconds per alert, more
+  if it has to be loaded first. Set *Wait for the AI at most* high enough (60 seconds is a good start) or the normal
+  text is spoken instead - which is fine, no alert is lost.
+- **It is less accurate.** Its answers go through the same checks as any other (*Maximum words*, *AI answer must
+  start with*), so a bad answer falls back to the normal text. Test it first with `push_alert_tts.preview`.
+- **It gets the same instructions and memory** as the main server, so it follows the same wording rules.
+- **It doesn't have to run all the time.** It is only contacted when the main and backup servers can't be used. You
+  can have it start on demand, for example with a [systemd socket](https://www.freedesktop.org/software/systemd/man/latest/systemd.socket.html)
+  that starts an [Ollama Docker container](https://hub.docker.com/r/ollama/ollama) on the first connection and a
+  proxy that stops it again when idle. Give the container a memory limit so it can't starve the computer.
 
 Tip: test before you rely on it. Run `push_alert_tts.preview` with
 `last_alert: true` (section 14) and compare `ai_text` with `filter_text`.

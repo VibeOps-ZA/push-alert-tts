@@ -160,7 +160,7 @@
             "data": {
               "ai_enabled": "Use AI wording",
               "ai_api": "Server type",
-              "ai_url": "LLM server address",
+              "ai_url": "LLM server address(es)",
               "ai_model": "Model",
               "ai_api_key": "API key (optional)",
               "ai_timeout": "Wait for the AI at most",
@@ -175,14 +175,16 @@
               "ai_auto_backfill": "Re-word missed alerts when the AI is back",
               "ai_offline_alert": "Repair alert when the AI is unreachable for",
               "ai_wake_entity": "Wake the AI server with (optional)",
-              "ai_backup_url": "Backup LLM server address (optional)",
+              "ai_backup_url": "Backup LLM server address(es) (optional)",
               "ai_backup_model": "Backup model (optional)",
-              "ai_backup_condition": "Use the backup only while (optional)"
+              "ai_backup_condition": "Use the backup only while (optional)",
+              "ai_emergency_url": "Emergency LLM server address(es) (optional)",
+              "ai_emergency_model": "Emergency model (optional)"
             },
             "data_description": {
               "ai_enabled": "Off = alerts are spoken exactly as before.",
               "ai_api": "Ollama, or any server with an OpenAI-compatible chat API (LM Studio, llama.cpp, vLLM, LocalAI, OpenAI).",
-              "ai_url": "For example http://192.168.1.50:11434 for Ollama, or http://192.168.1.50:1234/v1 for LM Studio.",
+              "ai_url": "For example http://192.168.1.50:11434 for Ollama, or http://192.168.1.50:1234/v1 for LM Studio. If the PC has more than one network connection (for example Ethernet and Wi-Fi), enter each address, separated by commas, the preferred one first: http://192.168.1.50:11434, http://192.168.1.51:11434. When one can't be reached the next is tried, and the first is used again as soon as it answers. Give each address a fixed IP (a DHCP reservation in your router).",
               "ai_model": "The model name exactly as the server lists it, e.g. qwen3.5:9b.",
               "ai_api_key": "Only if your server needs one. Saved in Home Assistant's storage.",
               "ai_timeout": "Seconds. If there is no usable answer in this time the normal text is spoken. If the server could not be reached, the AI is skipped for the next minute so alerts are not held up.",
@@ -195,11 +197,13 @@
               "ai_start_pattern": "A regular expression the answer must match at its start, e.g. ^(P\\d alert|Alert) at . Other answers are not used. Empty = any speakable answer.",
               "ai_memory": "Plain-language corrections sent with every alert, e.g. Say HAProxy as HA proxy. You can also add lines with the AI correction box or the add_ai_memory action. Earlier versions are kept in the config folder.",
               "ai_auto_backfill": "When the LLM server answers again after being unreachable, alerts that got the normal text meanwhile are worded by the AI for the AI review list (nothing is spoken). Same as running the reprocess_ai action.",
-              "ai_offline_alert": "Minutes. Shows a Home Assistant repair when the LLM server has not answered for this long; it clears itself when the server is back. The server is checked every 5 minutes (a plain web request; no model is loaded). 0 = off.",
+              "ai_offline_alert": "Minutes. Shows a Home Assistant repair when no AI server (main, backup or emergency) has been usable for this long, so alerts are getting the normal text. While the backup or emergency server is doing the wording there is no repair; the AI reachable sensors show which servers answer. It clears itself as soon as one answers again. The servers are checked every 5 minutes (a plain web request; no model is loaded). 0 = off.",
               "ai_wake_entity": "A button, input button or script that wakes the PC running the LLM, e.g. a Wake on LAN button. It is pressed when the server stops answering, at most once every 10 minutes while it stays unreachable.",
-              "ai_backup_url": "A second LLM server, used only when the main one can't be reached, within the same time limit. Same server type and API key as above. Empty = no backup.",
+              "ai_backup_url": "A second LLM server, used only when the main one can't be reached at any of its addresses, within the same time limit. Same server type and API key as above. Several addresses can be entered, separated by commas, as above. Empty = no backup.",
               "ai_backup_model": "The model name on the backup server. Empty = the same model as above.",
-              "ai_backup_condition": "Any entity; the backup is only used while it is on (for example a laptop that should only be used on mains power). Empty = whenever needed."
+              "ai_backup_condition": "Any entity; the backup is only used while it is on (for example a laptop that should only be used on mains power). Empty = whenever needed.",
+              "ai_emergency_url": "A last-resort LLM server, used only when neither the main nor the backup server can be reached, for example a small model on a low-power computer that is started only when needed. Never used for emergency (priority 2) alerts, which can't wait. It is checked only while the main and backup servers can't be used, so a server started on demand isn't woken needlessly. Same server type and API key as above; several addresses can be entered, separated by commas. Empty = none.",
+              "ai_emergency_model": "The model name on the emergency server, usually a small one. Empty = the same model as the main server."
             }
           }
         }
@@ -212,7 +216,8 @@
       "unknown_placeholder": "The template uses a name that your regex does not capture and is not built in. Check the spelling, or add a named group to the regex.",
       "group_in_speakers": "Pick the speaker group here only, not also in Speakers. Speakers should list the individual speakers in the group.",
       "template_without_regex": "A spoken template only works when 'What to say' is set to the regex option.",
-      "ai_url_required": "AI wording is on: enter the LLM server address, starting with http:// or https://.",
+      "ai_url_required": "AI wording is on: enter the LLM server address, starting with http:// or https:// (several addresses separated by commas).",
+      "ai_url_invalid": "Each backup and emergency server address must start with http:// or https://. Separate several addresses with commas.",
       "ai_model_required": "AI wording is on: enter the model name.",
       "ai_invalid_pattern": "The 'AI answer must start with' pattern isn't a valid regular expression.",
       "ai_invalid_keep_alive": "'Keep the model loaded for' must be empty, a whole number of seconds (-1 = always), or a duration such as 30s, 10m or 1h.",
@@ -275,6 +280,9 @@
       },
       "ai_reachable": {
         "name": "AI reachable"
+      },
+      "backup_ai_reachable": {
+        "name": "Backup AI reachable"
       }
     },
     "sensor": {
@@ -283,6 +291,15 @@
       },
       "ai_review": {
         "name": "AI review"
+      },
+      "ai_wording_source": {
+        "name": "AI wording source",
+        "state": {
+          "main": "Main AI server",
+          "backup": "Backup AI server",
+          "emergency": "Emergency AI server",
+          "template": "Normal text (no AI)"
+        }
       }
     },
     "text": {
@@ -306,8 +323,8 @@
       "description": "{reason}\n\nFix the cause on pushover.net, then reload the integration (Settings > Devices & services > Push Alert TTS > three dots > Reload)."
     },
     "ai_offline": {
-      "title": "Push Alert TTS: the AI is unreachable",
-      "description": "The LLM server at {url} has not answered since {since}. Alerts are still spoken with the normal text, so none are lost. Check that the PC running it is on and awake. This clears itself when the server answers again; missed alerts are then re-worded for the AI review list if that option is on."
+      "title": "Push Alert TTS: no AI server is answering",
+      "description": "No AI server ({url}) has been usable since {since}. Alerts are still spoken with the normal text, so none are lost. Check that the computers running them are on and awake. This clears itself as soon as one answers again; missed alerts are then re-worded for the AI review list if that option is on."
     }
   },
   "services": {

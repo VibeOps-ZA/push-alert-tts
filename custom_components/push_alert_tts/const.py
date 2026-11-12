@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "push_alert_tts"
-VERSION = "0.13.1"
+VERSION = "0.14.0"
 
 # --- Pushover Open Client API -------------------------------------------------
 API_BASE = "https://api.pushover.net/1"
@@ -118,6 +118,8 @@ CONF_AI_WAKE_ENTITY = "ai_wake_entity"  # button/script pressed to wake the LLM 
 CONF_AI_BACKUP_URL = "ai_backup_url"
 CONF_AI_BACKUP_MODEL = "ai_backup_model"
 CONF_AI_BACKUP_CONDITION = "ai_backup_condition"  # entity that must be on
+CONF_AI_EMERGENCY_URL = "ai_emergency_url"  # last resort, after main and backup
+CONF_AI_EMERGENCY_MODEL = "ai_emergency_model"
 AI_OPTION_KEYS = (
     CONF_AI_ENABLED,
     CONF_AI_API,
@@ -138,7 +140,16 @@ AI_OPTION_KEYS = (
     CONF_AI_BACKUP_URL,
     CONF_AI_BACKUP_MODEL,
     CONF_AI_BACKUP_CONDITION,
+    CONF_AI_EMERGENCY_URL,
+    CONF_AI_EMERGENCY_MODEL,
 )
+# The AI servers, in the order they are tried, and the wording sources.
+AI_MAIN = "main"
+AI_BACKUP = "backup"
+AI_EMERGENCY = "emergency"
+AI_SERVERS = (AI_MAIN, AI_BACKUP, AI_EMERGENCY)
+AI_SOURCE_TEMPLATE = "template"  # the normal (non-AI) text was used
+AI_SOURCES = [*AI_SERVERS, AI_SOURCE_TEMPLATE]
 AI_API_OLLAMA = "ollama"
 AI_API_OPENAI = "openai"
 AI_APIS = [AI_API_OLLAMA, AI_API_OPENAI]

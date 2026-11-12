@@ -51,7 +51,9 @@ from .const import (
     CONF_AI_BACKUP_MODEL,
     CONF_AI_BACKUP_URL,
     CONF_AI_CONTEXT,
+    CONF_AI_EMERGENCY_MODEL,
     CONF_AI_EMERGENCY_TIMEOUT,
+    CONF_AI_EMERGENCY_URL,
     CONF_AI_ENABLED,
     CONF_AI_GPU_LAYERS,
     CONF_AI_INSTRUCTIONS,
@@ -670,12 +672,19 @@ class PushAlertTTSOptionsFlow(OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
 
 
+_URL_RE = re.compile(r"^https?://[^\s/,;]+")
+
+
 def _check_ai(options: Mapping[str, Any]) -> dict[str, str]:
     """Errors for the AI wording section (shown at the top of the form)."""
     if options.get(CONF_AI_ENABLED):
-        url = str(options.get(CONF_AI_URL) or "").strip()
-        if not re.match(r"^https?://[^\s/]+", url):
+        urls = api.url_list(options.get(CONF_AI_URL))
+        if not urls or not all(_URL_RE.match(url) for url in urls):
             return {"base": "ai_url_required"}
+    for key in (CONF_AI_BACKUP_URL, CONF_AI_EMERGENCY_URL):
+        if not all(_URL_RE.match(url) for url in api.url_list(options.get(key))):
+            return {"base": "ai_url_invalid"}
+    if options.get(CONF_AI_ENABLED):
         if not str(options.get(CONF_AI_MODEL) or "").strip():
             return {"base": "ai_model_required"}
     try:
@@ -775,7 +784,7 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
             vol.Optional(
                 CONF_AI_URL,
                 description={"suggested_value": current.get(CONF_AI_URL)},
-            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
             vol.Optional(
                 CONF_AI_MODEL,
                 description={"suggested_value": current.get(CONF_AI_MODEL)},
@@ -851,7 +860,7 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
             vol.Optional(
                 CONF_AI_BACKUP_URL,
                 description={"suggested_value": current.get(CONF_AI_BACKUP_URL)},
-            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
             vol.Optional(
                 CONF_AI_BACKUP_MODEL,
                 description={"suggested_value": current.get(CONF_AI_BACKUP_MODEL)},
@@ -862,5 +871,13 @@ def _ai_schema(current: Mapping[str, Any], opt: Any, memory_text: str) -> vol.Sc
                     "suggested_value": current.get(CONF_AI_BACKUP_CONDITION)
                 },
             ): EntitySelector(),
+            vol.Optional(
+                CONF_AI_EMERGENCY_URL,
+                description={"suggested_value": current.get(CONF_AI_EMERGENCY_URL)},
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_AI_EMERGENCY_MODEL,
+                description={"suggested_value": current.get(CONF_AI_EMERGENCY_MODEL)},
+            ): str,
         }
     )

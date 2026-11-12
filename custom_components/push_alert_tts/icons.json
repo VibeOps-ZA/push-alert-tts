@@ -24,6 +24,12 @@
       },
       "ai_review": {
         "default": "mdi:robot-outline"
+      },
+      "ai_wording_source": {
+        "default": "mdi:robot-outline",
+        "state": {
+          "template": "mdi:text-box-outline"
+        }
       }
     },
     "text": {

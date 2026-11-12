@@ -394,6 +394,24 @@ async def test_options_ai_section(hass: HomeAssistant, mock_entry, no_listener) 
     assert result["errors"] == {"base": "ai_url_required"}
     result = await hass.config_entries.options.async_configure(
         flow["flow_id"],
+        {**base, "ai_wording": {"ai_enabled": True, "ai_url": f"{OLLAMA}, llm2", "ai_model": "m"}},
+    )
+    assert result["errors"] == {"base": "ai_url_required"}  # every address checked
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"],
+        {
+            **base,
+            "ai_wording": {
+                "ai_enabled": True,
+                "ai_url": OLLAMA,
+                "ai_model": "m",
+                "ai_emergency_url": "tiny.local:11434",
+            },
+        },
+    )
+    assert result["errors"] == {"base": "ai_url_invalid"}
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"],
         {
             **base,
             "ai_wording": {
@@ -669,7 +687,7 @@ async def test_repair_raised_and_cleared(
     assert runtime.ai_down_since is not None
     assert registry.async_get_issue(DOMAIN, "ai_offline") is None  # not yet 30 min
 
-    runtime.ai_down_since = dt_util.utcnow() - timedelta(minutes=31)
+    runtime.ai_none_since = dt_util.utcnow() - timedelta(minutes=31)
     await runtime.async_check_ai()
     issue = registry.async_get_issue(DOMAIN, "ai_offline")
     assert issue is not None and issue.translation_placeholders["url"] == OLLAMA
@@ -857,3 +875,177 @@ async def test_add_ai_correction_without_alert(
     )
     assert result["alert_found"] is False and result["new_wording"] is None
     assert runtime.memory == ["Say HAProxy as HA proxy"]
+
+
+# -- several addresses per server, emergency server, repair only when none ----------
+OLLAMA2 = "http://llm-wifi.local:11434"
+EMERG = "http://tiny.local:11434"
+
+
+async def test_second_address_used_when_first_unreachable(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    tts = async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.post(
+        f"{OLLAMA2}/api/chat", json=_answer("P1 alert at Acme on database 1. Full.")
+    )
+    runtime = await _setup(hass, mock_entry, **{**AI, "ai_url": f"{OLLAMA}, {OLLAMA2}"})
+    runtime.enabled = True
+
+    await _alert(hass, runtime, _msg(1))
+    assert tts[-1].data["message"] == "P1 alert at Acme on database 1. Full."
+    row = _history(runtime)[-1]
+    assert row["ai_server"] == "main" and row["ai_reason"] is None
+    assert runtime.ai_url_in_use["main"] == OLLAMA2
+    assert runtime.ai_down_since is None  # the main server answered
+    # The address that answered is tried first next time.
+    calls = len(aioclient_mock.mock_calls)
+    await _alert(hass, runtime, _msg(2))
+    assert len(aioclient_mock.mock_calls) == calls + 1
+    assert str(aioclient_mock.mock_calls[-1][1]).startswith(OLLAMA2)
+    reachable = hass.states.get("binary_sensor.push_alert_tts_ai_reachable")
+    assert reachable.attributes["address_in_use"] == OLLAMA2
+    source = hass.states.get("sensor.push_alert_tts_ai_wording_source")
+    assert source.state == "main"
+
+
+async def test_emergency_server_after_main_and_backup(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    tts = async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.post(
+        f"{BACKUP}/api/chat", exc=aiohttp.ClientConnectionError("refused")
+    )
+    aioclient_mock.post(
+        f"{EMERG}/api/chat", json=_answer("P1 alert at Acme on database 1. Full.")
+    )
+    runtime = await _setup(
+        hass,
+        mock_entry,
+        **AI,
+        ai_backup_url=BACKUP,
+        ai_emergency_url=EMERG,
+        ai_emergency_model="tiny-model",
+    )
+    runtime.enabled = True
+
+    await _alert(hass, runtime, _msg(1))
+    assert tts[-1].data["message"] == "P1 alert at Acme on database 1. Full."
+    row = _history(runtime)[-1]
+    assert row["ai_server"] == "emergency" and row["ai_reason"] is None
+    _m, url, body, _h = aioclient_mock.mock_calls[-1]
+    assert str(url).startswith(EMERG) and body["model"] == "tiny-model"
+    source = hass.states.get("sensor.push_alert_tts_ai_wording_source")
+    assert source.state == "emergency"
+    assert source.attributes["backup_reachable"] is False
+    assert source.attributes["emergency_reachable"] is True
+    backup = hass.states.get("binary_sensor.push_alert_tts_backup_ai_reachable")
+    assert backup.state == "off"
+
+    # Emergency (priority 2) alerts never wait for the emergency server.
+    calls = len(aioclient_mock.mock_calls)
+    await _alert(hass, runtime, _msg(2, priority=2, receipt="r2"))
+    assert not any(
+        str(c[1]).startswith(EMERG) for c in aioclient_mock.mock_calls[calls:]
+    )
+
+
+async def test_backup_answer_keeps_wording_source(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    _speakers(hass)
+    async_mock_service(hass, "tts", "speak")
+    async_mock_service(hass, "media_player", "volume_set")
+    aioclient_mock.post(CHAT, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.post(f"{BACKUP}/api/chat", json=_answer("Sure, here you go"))
+    runtime = await _setup(
+        hass,
+        mock_entry,
+        **AI,
+        ai_backup_url=BACKUP,
+        ai_emergency_url=EMERG,
+        ai_start_pattern=r"^(P\d alert|Alert) at ",
+    )
+    runtime.enabled = True
+    await _alert(hass, runtime, _msg(1))
+    # The backup answered (badly): the normal text, and no emergency attempt.
+    assert _history(runtime)[-1]["ai_reason"] == llm.REASON_SHAPE
+    assert not any(str(c[1]).startswith(EMERG) for c in aioclient_mock.mock_calls)
+    source = hass.states.get("sensor.push_alert_tts_ai_wording_source")
+    assert source.state == "template"
+
+
+@pytest.mark.real_ping
+async def test_no_repair_while_backup_answers(
+    hass: HomeAssistant, mock_entry, no_listener, aioclient_mock
+) -> None:
+    from datetime import timedelta
+
+    from homeassistant.helpers import issue_registry as ir
+    from homeassistant.util import dt as dt_util
+
+    aioclient_mock.get(OLLAMA, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.get(OLLAMA2, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.get(BACKUP, text="Ollama is running")
+    runtime = await _setup(
+        hass,
+        mock_entry,
+        **{**AI, "ai_url": f"{OLLAMA},{OLLAMA2}"},
+        ai_backup_url=BACKUP,
+        ai_emergency_url=EMERG,
+        ai_offline_alert=30,
+        ai_auto_backfill=False,
+    )
+    registry = ir.async_get(hass)
+    await runtime.async_check_ai()
+    assert runtime.ai_down_since is not None  # main down at both addresses
+    assert runtime.ai_server_up["backup"] is True
+    assert runtime.ai_usable is True and runtime.ai_none_since is None
+    # the emergency server is not woken while the backup can be used
+    assert not any(str(c[1]).startswith(EMERG) for c in aioclient_mock.mock_calls)
+    runtime.ai_down_since = dt_util.utcnow() - timedelta(minutes=60)
+    await runtime.async_check_ai()
+    assert registry.async_get_issue(DOMAIN, "ai_offline") is None
+    backup = hass.states.get("binary_sensor.push_alert_tts_backup_ai_reachable")
+    assert backup.state == "on"
+
+    # Backup gone too: the emergency server is checked; still none -> repair.
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OLLAMA, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.get(OLLAMA2, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.get(BACKUP, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.get(EMERG, exc=aiohttp.ClientConnectionError("refused"))
+    await runtime.async_check_ai()
+    assert any(str(c[1]).startswith(EMERG) for c in aioclient_mock.mock_calls)
+    assert runtime.ai_usable is False and runtime.ai_none_since is not None
+    runtime.ai_none_since = dt_util.utcnow() - timedelta(minutes=31)
+    await runtime.async_check_ai()
+    issue = registry.async_get_issue(DOMAIN, "ai_offline")
+    assert issue is not None and EMERG in issue.translation_placeholders["url"]
+
+    # The Wi-Fi address answers again: main back, repair cleared, address noted.
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(OLLAMA, exc=aiohttp.ClientConnectionError("refused"))
+    aioclient_mock.get(OLLAMA2, text="Ollama is running")
+    aioclient_mock.get(BACKUP, exc=aiohttp.ClientConnectionError("refused"))
+    await runtime.async_check_ai()
+    assert runtime.ai_down_since is None
+    assert runtime.ai_url_in_use["main"] == OLLAMA2
+    assert registry.async_get_issue(DOMAIN, "ai_offline") is None
+
+
+def test_url_list() -> None:
+    from custom_components.push_alert_tts.api import url_list
+
+    assert url_list(" http://a:1, http://b:2;http://c:3\nhttp://a:1 ") == [
+        "http://a:1",
+        "http://b:2",
+        "http://c:3",
+    ]
+    assert url_list(None) == [] and url_list("") == []

@@ -5,6 +5,7 @@ https://pushover.net/api/client
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import aiohttp
@@ -51,6 +52,17 @@ def as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def url_list(value: Any) -> list[str]:
+    """One server address or several, separated by commas, semicolons, spaces or
+    new lines, in the order given (duplicates dropped)."""
+    urls: list[str] = []
+    for part in re.split(r"[,;\s]+", str(value or "")):
+        part = part.strip()
+        if part and part not in urls:
+            urls.append(part)
+    return urls
 
 
 def message_id(msg: dict) -> int:
